@@ -79,8 +79,7 @@
   <div class="container">
     <h1>FlatMaster</h1>
     <p style="font-size: 1.25rem; max-width: 800px;">
-      The automated flat frame calibration utility for PixInsight users. 
-      Scan gigabytes of astronomical data, match flats with the perfect darks, and generate master calibration frames with a single click.
+      A flat frame calibration tool for PixInsight users. Scans directories of astronomical data, matches flats to the appropriate darks, and generates master calibration frames.
     </p>
   </div>
 </div>
@@ -97,7 +96,7 @@
 
   <section id="intro">
     <h2>1. Introduction</h2>
-    <p>FlatMaster solves a specific pain point in astrophotography: <strong>matching flat frames to their corresponding dark frames</strong> based on complex criteria (exposure, gain, binning, temperature) and automating their integration.</p>
+    <p>FlatMaster automates the matching of flat frames to their corresponding dark frames based on exposure, gain, binning, and temperature, then handles calibration and integration.</p>
     <div class="grid">
       <div class="card">
         <h3>What it Does</h3>
@@ -111,9 +110,9 @@
       <div class="card">
         <h3>Why use it?</h3>
         <ul>
-          <li><strong>Speed:</strong> Avoid manually hunting for "Dark_30s_-10C_Gain100.xisf".</li>
-          <li><strong>Accuracy:</strong> Uses header metadata, not filenames.</li>
-          <li><strong>Safety:</strong> Validates you have enough frames (min 3) before processing.</li>
+          <li>No need to manually hunt for matching darks across your library.</li>
+          <li>Uses FITS/XISF header metadata for matching, not filenames.</li>
+          <li>Validates frame counts (min 3) before processing.</li>
         </ul>
       </div>
     </div>

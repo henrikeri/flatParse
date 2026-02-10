@@ -84,7 +84,7 @@
   <p>The <code>MetadataReaderService</code> is responsible for extracting essential headers (EXPOSURE, GAIN, DATE-OBS) from FITS and XISF files. To improve performance, it caches results using <code>IMemoryCache</code>.</p>
 
   <h3>Dark Matching Logic</h3>
-  <p>Located in <code>DarkMatchingService.cs</code>. This is the "brain" of the application. It receives a <code>WalkingFlat</code> (a group of flat files) and a <code>DarkCatalog</code>.</p>
+  <p>Located in <code>DarkMatchingService.cs</code>. It receives a <code>WalkingFlat</code> (a group of flat files) and a <code>DarkCatalog</code>, then walks a priority chain to find the best match.</p>
   <pre><code><span class="keyword">public</span> DarkMatchResult? FindBestDark(...)
 {
     <span class="comment">// 1. Exact Match: Master Dark Flat</span>

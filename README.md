@@ -1,54 +1,59 @@
-# 🔭 FlatMaster - Astronomical Flat Calibration Orchestrator
+# FlatMaster — Astronomical Flat Calibration Orchestrator
 
-A professional-grade C# application for processing and integrating astronomical flat calibration frames with intelligent dark frame matching and PixInsight integration.
+A C# application for processing and integrating astronomical flat calibration frames with automatic dark frame matching and PixInsight integration.
 
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet)
 ![WPF](https://img.shields.io/badge/UI-WPF-0078D4?logo=windows)
 ![PixInsight](https://img.shields.io/badge/PixInsight-1.8.9%2B-00A1F1)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-## ✨ Features
+## Features
 
-### 🔍 **Smart Discovery**
+### Smart Discovery
 - Recursive directory scanning for flat and dark frames
 - Automatic exposure grouping (minimum 3 frames per group)
 - FITS and XISF format support
 - Metadata extraction from headers and filenames
 
-### 🎯 **Intelligent Dark Matching**
+### Dark Frame Matching
 - Multi-criteria matching: exposure, binning, gain, offset, temperature
 - Automatic master dark generation when needed
 - Nearest-exposure fallback with dark optimization
 - Configurable matching preferences
 
-### ⚙️ **PixInsight Integration**
+### PixInsight Integration
 - Dynamic PJSR script generation
 - WBPP-compatible rejection algorithms (Percentile, Winsorized Sigma, Linear Fit)
 - Automatic ImageCalibration and ImageIntegration
 - Proper FITS keyword handling
 
-### 🎨 **Modern UI**
-- Clean, intuitive WPF interface
-- Real-time progress tracking
-- Hierarchical dark inventory
+### Native Processing Engine
+- Built-in calibration and integration (no PixInsight dependency required)
+- Exact histogram median normalization
+- EqualizeFluxes rejection normalization
+- Pixel-level accuracy within Float32 precision of PixInsight output
+
+### User Interface
+- WPF interface with real-time progress tracking
+- Hierarchical dark inventory view
 - Interactive selection management
 - Live processing log
 
-### 📊 **Professional Output**
+### Output
 - Mirrored directory structure (`{BaseDir}_processed/`)
 - Consistent naming: `MasterFlat_{DATE}_{FILTER}_{EXPOSURE}s.xisf`
 - Optional calibrated intermediate cleanup
 - Session logging to file
 
-## 📋 Requirements
+## Requirements
 
 - **.NET 8.0 SDK** ([Download](https://dotnet.microsoft.com/download/dotnet/8.0))
 - **Windows 10/11** (WPF requirement)
-- **PixInsight 1.8.9+** ([Official Site](https://pixinsight.com))
+- **PixInsight 1.8.9+** ([Official Site](https://pixinsight.com)) — only needed when using the PI engine
 
-## 🚀 Quick Start
+## Quick Start
 
-### Using PowerShell Build Script (Recommended)
+### Using PowerShell Build Script
 
 ```powershell
 # Build and run
@@ -80,48 +85,47 @@ dotnet run --project src/FlatMaster.WPF
 dotnet test
 ```
 
-## 📖 Documentation
+## Documentation
 
-- **[USAGE.md](USAGE.md)** - Complete usage guide and workflow
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Design decisions and patterns
-- **[Contributing](CONTRIBUTING.md)** - How to contribute (coming soon)
+- **[USAGE.md](USAGE.md)** — Complete usage guide and workflow
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Design decisions and patterns
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 FlatMaster/
 ├── src/
-│   ├── FlatMaster.Core/              # 🔷 Domain Layer
-│   │   ├── Models/                   #    Business entities
-│   │   └── Interfaces/               #    Service contracts
-│   ├── FlatMaster.Infrastructure/    # 🔧 Infrastructure Layer
-│   │   └── Services/                 #    File I/O, PixInsight
-│   └── FlatMaster.WPF/               # 🎨 Presentation Layer
-│       ├── ViewModels/               #    MVVM ViewModels
-│       ├── Views/                    #    XAML UI
-│       └── Styles/                   #    Modern styling
+│   ├── FlatMaster.Core/              # Domain Layer
+│   │   ├── Models/                   #   Business entities
+│   │   └── Interfaces/              #   Service contracts
+│   ├── FlatMaster.Infrastructure/    # Infrastructure Layer
+│   │   └── Services/                #   File I/O, PixInsight, Native engine
+│   └── FlatMaster.WPF/              # Presentation Layer
+│       ├── ViewModels/              #   MVVM ViewModels
+│       ├── Views/                   #   XAML UI
+│       └── Styles/                  #   Styling
 └── tests/
-    └── FlatMaster.Tests/             # ✅ Test Suite
+    └── FlatMaster.Tests/             # Test Suite
 ```
 
 ### Design Principles
 
-- ✅ **MVVM Pattern** - Clean separation, testable ViewModels
-- ✅ **Dependency Injection** - Loose coupling, easy testing
-- ✅ **Async/Await** - Non-blocking UI, responsive experience
-- ✅ **SOLID Principles** - Maintainable, extensible code
-- ✅ **Nullable Reference Types** - Compile-time null safety
+- **MVVM Pattern** — Clean separation, testable ViewModels
+- **Dependency Injection** — Loose coupling via `Microsoft.Extensions.DependencyInjection`
+- **Async/Await** — Non-blocking UI throughout
+- **SOLID Principles** — Maintainable, extensible code
+- **Nullable Reference Types** — Compile-time null safety
 
-## 🎯 Usage Example
+## Usage
 
-1. **Add directories**: Select flat base folders and dark library roots
-2. **Scan**: Discover frames and group by exposure
-3. **Review**: Check found directories and dark inventory
-4. **Select**: Choose what to process (or use "Select All")
-5. **Process**: Click "Process Selected" and monitor progress
-6. **Results**: Master flats saved in `{BaseDir}_processed/`
+1. **Add directories** — Select flat base folders and dark library roots
+2. **Scan** — Discover frames and group by exposure
+3. **Review** — Check found directories and dark inventory
+4. **Select** — Choose what to process (or use "Select All")
+5. **Process** — Click "Process Selected" and monitor progress
+6. **Results** — Master flats saved in `{BaseDir}_processed/`
 
-## 🔧 Configuration
+## Configuration
 
 Edit `src/FlatMaster.WPF/appsettings.json`:
 
@@ -145,18 +149,15 @@ Edit `src/FlatMaster.WPF/appsettings.json`:
 }
 ```
 
-## 🧪 Testing
+## Testing
 
-Comprehensive test coverage using:
-- **xUnit** - Test framework
-- **FluentAssertions** - Expressive assertions
-- **Moq** - Mocking framework
+Test coverage using xUnit, FluentAssertions, and Moq:
 
 ```bash
 dotnet test --verbosity normal
 ```
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 | Layer | Technology |
 |-------|-----------|
@@ -167,33 +168,11 @@ dotnet test --verbosity normal
 | **Logging** | Microsoft.Extensions.Logging |
 | **Testing** | xUnit, FluentAssertions, Moq |
 
-## 🤝 Contributing
+## License
 
-Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
-### Areas for Contribution
-- 🌐 Additional image format support (e.g., TIFF, RAW)
-- 📊 Statistics and quality metrics
-- 🎨 UI/UX improvements
-- 📝 Documentation enhancements
-- 🧪 Additional test coverage
+## Links
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **PixInsight** team for their excellent astrophotography platform
-- **FITS** and **XISF** format specifications
-- **.NET Community** for amazing OSS tools
-
-## 📞 Support
-
-- 🐛 **Issues**: [GitHub Issues](https://github.com/yourusername/flatmaster/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/yourusername/flatmaster/discussions)
-- 📧 **Email**: your.email@example.com
-
----
-
-**Built with ❤️ for the astrophotography community**
+- [Issues](https://github.com/henrikeri/flatParse/issues)
+- [PixInsight](https://pixinsight.com)
