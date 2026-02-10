@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FlatMaster Developer Guide</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Fraunces:wght@400;600&display=swap");
+    :root {
+      --bg-0: #0d1117; --bg-1: #161b22; --bg-2: #21262d;
+      --fg-0: #c9d1d9; --fg-1: #8b949e;
+      --accent: #58a6ff; --green: #3fb950; --purple: #bc8cff;
+      --border: #30363d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "Space Grotesk", sans-serif;
+      color: var(--fg-0); background: var(--bg-0);
+      line-height: 1.6;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
+    
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    h1, h2, h3 { font-family: "Fraunces", serif; color: var(--fg-0); margin-top: 2.5rem; }
+    h1 { font-size: 3rem; margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 20px; }
+    h2 { font-size: 1.8rem; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    
+    code { font-family: "Consolas", monospace; background: rgba(110,118,129,0.4); padding: 0.2em 0.4em; border-radius: 6px; font-size: 85%; }
+    pre { background: var(--bg-1); padding: 16px; border-radius: 6px; overflow-x: auto; border: 1px solid var(--border); }
+    pre code { background: none; padding: 0; color: var(--fg-0); }
+    
+    .comment { color: var(--fg-1); font-style: italic; }
+    .keyword { color: var(--accent); }
+    .type { color: var(--purple); }
+    .string { color: #a5d6ff; }
+
+    .file-tree { font-family: monospace; color: var(--fg-1); }
+    .file-tree .dir { color: var(--accent); font-weight: bold; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>FlatMaster Developer Guide</h1>
+  
+  <p>Technical documentation for the FlatMaster WPF application. This guide covers the solution architecture, dependency injection setup, and critical service implementations.</p>
+
+  <h2>1. Project Structure</h2>
+  <pre class="file-tree">
+<span class="dir">src/</span>
+├── <span class="dir">FlatMaster.Core/</span>            <span class="comment"># Domain models & Interfaces (No ext dependencies)</span>
+│   ├── Interfaces/           <span class="comment"># IFileScannerService, IPixInsightService, etc.</span>
+│   └── Models/               <span class="comment"># FlatFrame, DarkFrame, MatchingCriteria</span>
+├── <span class="dir">FlatMaster.Infrastructure/</span>  <span class="comment"># Implementation of core services</span>
+│   ├── Services/             <span class="comment"># File scanning, PJSR generation, Metadata parsing</span>
+│   └── Templates/            <span class="comment"># Embedded JavaScript templates for PixInsight</span>
+└── <span class="dir">FlatMaster.WPF/</span>             <span class="comment"># UI Layer (MVVM)</span>
+    ├── ViewModels/           <span class="comment"># MainViewModel handles all presentation logic</span>
+    ├── Views/                <span class="comment"># XAML Only</span>
+    └── App.xaml.cs           <span class="comment"># Composition Root (DI)</span>
+  </pre>
+
+  <h2>2. Dependency Injection</h2>
+  <p>The application uses <code>Microsoft.Extensions.DependencyInjection</code> configured in <code>App.xaml.cs</code>. All major services are registered as Singletons.</p>
+  
+  <h3>Service Registration</h3>
+  <pre><code><span class="keyword">private void</span> ConfigureServices(IServiceCollection services)
+{
+    <span class="comment">// Core Services</span>
+    services.AddSingleton&lt;<span class="type">IMetadataReaderService</span>, <span class="type">MetadataReaderService</span>&gt;();
+    services.AddSingleton&lt;<span class="type">IDarkMatchingService</span>, <span class="type">DarkMatchingService</span>&gt;();
+    services.AddSingleton&lt;<span class="type">IPixInsightService</span>, <span class="type">PixInsightService</span>&gt;();
+
+    <span class="comment">// UI & Config</span>
+    services.AddSingleton(Configuration);
+    services.AddTransient&lt;<span class="type">MainViewModel</span>&gt;();
+}</code></pre>
+
+  <h2>3. Key Subsystems</h2>
+
+  <h3>Metadata Parsing</h3>
+  <p>The <code>MetadataReaderService</code> is responsible for extracting essential headers (EXPOSURE, GAIN, DATE-OBS) from FITS and XISF files. To improve performance, it caches results using <code>IMemoryCache</code>.</p>
+
+  <h3>Dark Matching Logic</h3>
+  <p>Located in <code>DarkMatchingService.cs</code>. This is the "brain" of the application. It receives a <code>WalkingFlat</code> (a group of flat files) and a <code>DarkCatalog</code>.</p>
+  <pre><code><span class="keyword">public</span> DarkMatchResult? FindBestDark(...)
+{
+    <span class="comment">// 1. Exact Match: Master Dark Flat</span>
+    <span class="keyword">if</span> (TryFind(ImageType.MasterDarkFlat, exactExposure: <span class="keyword">true</span>, <span class="keyword">out</span> <span class="type">var</span> match)) 
+        <span class="keyword">return</span> match;
+
+    <span class="comment">// 2. Exact Match: Raw Dark Flats (>= 3 frames required)</span>
+    ...
+
+    <span class="comment">// 5. Fallback: Nearest exposure (if optimization allowed)</span>
+    <span class="keyword">if</span> (options.AllowNearestExposureWithOptimize) { ... }
+}</code></pre>
+
+  <h3>PixInsight Script Generation</h3>
+  <p>We do not drive PixInsight via COM or IPC. Instead, we generate a self-contained <strong>PJSR (PixInsight JavaScript Runtime)</strong> script.</p>
+  <ol>
+    <li><code>PixInsightService</code> serializes the processing plan (file paths, options) into a JSON string.</li>
+    <li>This JSON is injected into a template string (<code>%CONFIG_JSON_HERE%</code>).</li>
+    <li>The script is saved to a temp file.</li>
+    <li>PixInsight is invoked: <code>PixInsight.exe --run="script.js" --force-exit</code></li>
+  </ol>
+
+  <h2>4. Debugging & Logging</h2>
+  <p>Logs are critical for diagnosing matching failures.</p>
+  <ul>
+    <li><strong>Console:</strong> Standard output shows succinct progress.</li>
+    <li><strong>File:</strong> Detailed logs are written to <code>%TEMP%\FlatMaster_detailed_{timestamp}.log</code>.</li>
+    <li><strong>PixInsight Output:</strong> Captured via stdout/stderr redirection and piped to the UI log window.</li>
+  </ul>
+
+  <h2>5. Extending the Application</h2>
+  
+  <h3>Adding a New Filter Strategy</h3>
+  <p>If you need to group flats by something other than Filter (e.g., Rotator Angle), modify <code>FileScannerService.ExposureGrouping</code>.</p>
+
+  <h3>Modifying the Processing Logic</h3>
+  <p>The actual image processing logic resides in the JavaScript template, not C#. You must edit the hardcoded template string in <code>PixInsightService.GetPJSRTemplate()</code> to change how ImageIntegration or ImageCalibration is configured.</p>
+
+</div>
+</body>
+</html>

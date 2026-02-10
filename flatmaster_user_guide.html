@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FlatMaster User Guide</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Fraunces:wght@400;600&display=swap");
+    :root {
+      --bg-0: #090d14; --bg-1: #121826; --bg-2: #1a2333;
+      --ink-0: #f2f5fb; --ink-1: #c7d3e6; --ink-2: #90a1bb;
+      --accent: #7ad7ff; --accent-dim: rgba(122, 215, 255, 0.1);
+      --success: #8bf9d3; --warning: #ffbd7a; --danger: #ff7a7a;
+      --stroke: #2a3650; --card: #141c2c; --shadow: rgba(0, 0, 0, 0.5);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "Space Grotesk", sans-serif;
+      color: var(--ink-0); background: var(--bg-0);
+      line-height: 1.6;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
+    
+    /* Typography */
+    h1, h2, h3 { font-family: "Fraunces", serif; margin: 0 0 1rem; color: var(--ink-0); }
+    h1 { font-size: 3.5rem; letter-spacing: -1px; }
+    h2 { font-size: 2rem; margin-top: 3rem; border-bottom: 1px solid var(--stroke); padding-bottom: 1rem; }
+    h3 { font-size: 1.4rem; margin-top: 2rem; color: var(--accent); }
+    p { margin-bottom: 1.25rem; color: var(--ink-1); }
+    strong { color: var(--ink-0); font-weight: 700; }
+    code { font-family: monospace; background: var(--bg-2); padding: 2px 6px; border-radius: 4px; color: var(--accent); font-size: 0.9em; }
+
+    /* Layout */
+    .hero { 
+      padding: 60px 0; border-bottom: 1px solid var(--stroke); margin-bottom: 40px;
+      background: radial-gradient(circle at top right, var(--accent-dim), transparent 40%);
+    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 24px; }
+    
+    /* Components */
+    .card {
+      background: var(--card); border: 1px solid var(--stroke);
+      padding: 24px; border-radius: 12px;
+      box-shadow: 0 4px 20px var(--shadow);
+    }
+    .step { display: flex; gap: 20px; margin-bottom: 24px; }
+    .step-num { 
+      flex-shrink: 0; width: 40px; height: 40px; 
+      background: var(--accent); color: var(--bg-0); font-weight: 700;
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    }
+    .alert {
+      padding: 16px; border-radius: 8px; margin: 20px 0;
+      border-left: 4px solid var(--accent); background: var(--bg-2);
+    }
+    .alert.warning { border-color: var(--warning); }
+    .alert.danger { border-color: var(--danger); }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--stroke); color: var(--ink-1); }
+    th { color: var(--ink-2); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; }
+
+    /* Navigation */
+    .toc {
+      background: var(--bg-1); padding: 20px; border-radius: 12px;
+      border: 1px solid var(--stroke); display: inline-block; margin-bottom: 40px;
+    }
+    .toc a { 
+      display: block; color: var(--ink-1); text-decoration: none; 
+      padding: 4px 0; font-weight: 600;
+    }
+    .toc a:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="container">
+    <h1>FlatMaster</h1>
+    <p style="font-size: 1.25rem; max-width: 800px;">
+      The automated flat frame calibration utility for PixInsight users. 
+      Scan gigabytes of astronomical data, match flats with the perfect darks, and generate master calibration frames with a single click.
+    </p>
+  </div>
+</div>
+
+<div class="container">
+  <div class="toc">
+    <div style="text-transform: uppercase; color: var(--ink-2); font-size: 0.85rem; margin-bottom: 10px;">Contents</div>
+    <a href="#intro">1. Introduction</a>
+    <a href="#setup">2. Setup & Configuration</a>
+    <a href="#tutorial">3. Step-by-Step Tutorial</a>
+    <a href="#workflow">4. Detailed Workflow</a>
+    <a href="#reference">5. Interface Reference</a>
+  </div>
+
+  <section id="intro">
+    <h2>1. Introduction</h2>
+    <p>FlatMaster solves a specific pain point in astrophotography: <strong>matching flat frames to their corresponding dark frames</strong> based on complex criteria (exposure, gain, binning, temperature) and automating their integration.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>What it Does</h3>
+        <ul>
+          <li>Scans folder trees for FITS/XISF files.</li>
+          <li>Groups flat frames by focus filter, exposure, and temperature.</li>
+          <li>Automatically finds the best matching Dark or DarkFlat from your library.</li>
+          <li>Generates and runs a PixInsight script to calibrate and integrate the files.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Why use it?</h3>
+        <ul>
+          <li><strong>Speed:</strong> Avoid manually hunting for "Dark_30s_-10C_Gain100.xisf".</li>
+          <li><strong>Accuracy:</strong> Uses header metadata, not filenames.</li>
+          <li><strong>Safety:</strong> Validates you have enough frames (min 3) before processing.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="setup">
+    <h2>2. Setup & Configuration</h2>
+    <div class="alert">
+      <strong>Requirement:</strong> You must have <code>PixInsight</code> installed (ver 1.8.8 or later) for the actual processing step to work. FlatMaster merely orchestrates PixInsight.
+    </div>
+
+    <h3>Initial Configuration</h3>
+    <ol>
+      <li>Launch FlatMaster.</li>
+      <li>Navigate to the <strong>Configuration</strong> tab.</li>
+      <li><strong>PixInsight Executable:</strong> Paste the full path to your installation (e.g., <code>C:\Program Files\PixInsight\bin\PixInsight.exe</code>).</li>
+      <li><strong>Output Mode:</strong>
+        <ul>
+          <li><code>Inline</code>: Saves master flats inside the source folders (e.g., adjacent to your raw flats).</li>
+          <li><code>Replicated Tree</code>: Creates a shadow directory structure in a new location.</li>
+        </ul>
+      </li>
+    </ol>
+  </section>
+
+  <section id="tutorial">
+    <h2>3. Step-by-Step Tutorial</h2>
+    <p>Let's walk through a typical session after a night of imaging.</p>
+
+    <div class="step">
+      <div class="step-num">1</div>
+      <div>
+        <h3>Import Data</h3>
+        <p>Go to the <strong>Scan / Match</strong> tab. Click <strong>Scan Flats...</strong> and select the top-level folder of your session (e.g., <code>D:\Astro\2023-11-05\Flats</code>). FlatMaster will recursively find all image files.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num">2</div>
+      <div>
+        <h3>Designate Dark Library</h3>
+        <p>Click <strong>Scan Darks...</strong> and point it to your permanent dark library (e.g., <code>X:\Calibration\Darks</code>). This library can contain raw darks, master darks, or dark flats.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num">3</div>
+      <div>
+        <h3>Review the Match</h3>
+        <p>Look at the <strong>Flat Groups</strong> tree. Expanding a folder shows exposure groups (e.g., <code>3.50s (L)</code>).
+        <br>Click <strong>Run Matching</strong> in the bottom toolbar. The "Selected Dark" column will populate.</p>
+        <div class="alert warning">
+          If a row turns red or says <strong>"No match found"</strong>, check your Dark Library for a file with matching Exposure, Gain, and Binning.
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num">4</div>
+      <div>
+        <h3>Process</h3>
+        <p>Switch to the <strong>Process / Report</strong> tab. Click <strong>Run Processing</strong>.</p>
+        <p>A log window will appear showing PixInsight startup. Steps performed:</p>
+        <ol>
+          <li>Calibrate individual flats using the matched Dark.</li>
+          <li>Integrate calibrated flats into a <code>MasterFlat.xisf</code>.</li>
+          <li>Cleanup temporary files (if configured).</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section id="workflow">
+    <h2>4. Detailed Workflow</h2>
+    <h3>The Matching Logic</h3>
+    <p>When you click "Run Matching", FlatMaster employs a waterfall algorithm to find the best dark frame. It prioritizes in this order:</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Priority</th>
+          <th>Type</th>
+          <th>Condition</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td>Master Dark Flat</td>
+          <td>Exact exposure match.</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>Raw Dark Flat</td>
+          <td>Exact exposure match, quantity >= 3.</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td>Master Dark</td>
+          <td>Exact exposure match.</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td>Raw Dark</td>
+          <td>Exact exposure match, quantity >= 3.</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td>Optimized (Any)</td>
+          <td>If "Allow Optimize" is on, picks nearest exposure.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Common Warnings</h3>
+    <ul>
+      <li><strong>Optimization Required:</strong> You matched a 30s Dark to a 3.5s Flat. PixInsight's "Optimize" feature will scale the thermal noise, but this is less accurate than an exact match.</li>
+      <li><strong>Temp Delta > 5°C:</strong> Your darks were shot at a significantly different temperature than your flats. This may result in under/over-correction.</li>
+    </ul>
+  </section>
+
+  <section id="reference">
+    <h2>5. Interface Reference</h2>
+    <h3>Main Toolbar</h3>
+    <div class="grid">
+      <div class="card">
+        <strong>Scan Flats</strong><br>
+        Adds a root directory to the flat frame search list. Can be clicked multiple times to add scattered folders.
+      </div>
+      <div class="card">
+        <strong>Scan Darks</strong><br>
+        Adds a root directory to the dark library search list.
+      </div>
+      <div class="card">
+        <strong>Clear</strong><br>
+        Removes all loaded files from memory (does not delete files from disk).
+      </div>
+    </div>
+
+    <h3>Data Grid Columns</h3>
+    <ul>
+        <li><strong>Exposure:</strong> Integration time in seconds.</li>
+        <li><strong>Count:</strong> Number of files in the group. Must be >= 3.</li>
+        <li><strong>Selected Dark:</strong> The file chosen by the algorithm.</li>
+        <li><strong>Confidence:</strong> A score (0-100%) indicating match quality. Reduced by mismatched gain, offset, or temperature.</li>
+    </ul>
+  </section>
+
+</div>
+</body>
+</html>

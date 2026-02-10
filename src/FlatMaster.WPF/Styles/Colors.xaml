@@ -1,0 +1,27 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Modern Color Palette (Microsoft Fluent Design) -->
+    <SolidColorBrush x:Key="PrimaryBrush" Color="#0078D4"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#0078D4"/>
+    <SolidColorBrush x:Key="SuccessBrush" Color="#107C10"/>
+    <SolidColorBrush x:Key="WarningBrush" Color="#FF8C00"/>
+    <SolidColorBrush x:Key="ErrorBrush" Color="#E81123"/>
+    
+    <!-- Backgrounds -->
+    <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#FAFAFA"/>
+    <SolidColorBrush x:Key="HeaderBackgroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="PanelBackgroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="InputBackgroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="#E1E1E1"/>
+    
+    <!-- Text Colors -->
+    <SolidColorBrush x:Key="PrimaryTextBrush" Color="#242424"/>
+    <SolidColorBrush x:Key="SecondaryTextBrush" Color="#616161"/>
+    <SolidColorBrush x:Key="DisabledTextBrush" Color="#BFBFBF"/>
+    
+    <!-- Button States -->
+    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#F3F3F3"/>
+    <SolidColorBrush x:Key="ButtonPressedBrush" Color="#E8E8E8"/>
+
+</ResourceDictionary>
