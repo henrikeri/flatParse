@@ -5,7 +5,7 @@ A C# application for processing and integrating astronomical flat calibration fr
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet)
 ![WPF](https://img.shields.io/badge/UI-WPF-0078D4?logo=windows)
 ![PixInsight](https://img.shields.io/badge/PixInsight-1.8.9%2B-00A1F1)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-GPLv3-blue)
 
 ## Features
 
@@ -170,7 +170,7 @@ dotnet test --verbosity normal
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU GPLv3 — see the [LICENSE](LICENSE) file for details. Third-party notices are listed in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
 
 ## Links
 

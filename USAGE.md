@@ -173,4 +173,4 @@ dotnet test
 
 ## License
 
-MIT License - See LICENSE file
+GNU GPLv3 - See LICENSE file. Third-party notices are listed in THIRD-PARTY-NOTICES.

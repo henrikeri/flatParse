@@ -16,6 +16,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\..\LICENSE" Link="LICENSE">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\THIRD-PARTY-NOTICES" Link="THIRD-PARTY-NOTICES">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\FlatMaster.Core\FlatMaster.Core.csproj" />
     <ProjectReference Include="..\FlatMaster.Infrastructure\FlatMaster.Infrastructure.csproj" />
   </ItemGroup>

@@ -126,6 +126,7 @@ FlatMaster_*.log
 # Temporary scripts
 flatmaster_script.js
 flatmaster_sentinel.txt
+flat_parse4_0.py
 
 # Publish output
 publish/

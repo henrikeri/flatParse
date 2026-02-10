@@ -557,6 +557,10 @@
                 <TextBlock Text=".NET 8 + WPF" Foreground="{StaticResource SecondaryTextBrush}"/>
                 <TextBlock Text="•" Margin="12,0" Foreground="{StaticResource BorderBrush}"/>
                 <TextBlock Text="PixInsight / Native Processing" Foreground="{StaticResource SecondaryTextBrush}"/>
+                <TextBlock Text="•" Margin="12,0" Foreground="{StaticResource BorderBrush}"/>
+                <Button Content="Licenses" Click="OnLicensesClick"
+                        Style="{StaticResource SecondaryButtonStyle}" FontSize="11"
+                        Padding="10,2" MinHeight="24"/>
             </StackPanel>
         </Border>
     </Grid>
