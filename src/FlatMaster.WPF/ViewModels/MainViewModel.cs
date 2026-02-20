@@ -34,6 +34,11 @@ namespace FlatMaster.WPF.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
+    [ObservableProperty]
+    private bool _requireDarks = true;
+
+    [ObservableProperty]
+    private bool _allowProcessingWithoutFlats = false;
     private readonly IFileScannerService _fileScanner;
     private readonly IDarkMatchingService _darkMatcher;
     private readonly IPixInsightService _pixInsight;
@@ -600,7 +605,9 @@ public partial class MainViewModel : ObservableObject
                     PreferClosestTemp = bool.Parse(_configuration["DarkMatching:PreferClosestTemp"] ?? "true"),
                     MaxTempDeltaC = double.Parse(_configuration["DarkMatching:MaxTempDeltaC"] ?? "5.0", CultureInfo.InvariantCulture),
                     AllowNearestExposureWithOptimize = bool.Parse(_configuration["DarkMatching:AllowNearestExposureWithOptimize"] ?? "true")
-                }
+                },
+                RequireDarks = RequireDarks,
+                AllowProcessingWithoutFlats = AllowProcessingWithoutFlats
             };
 
             var plan = new ProcessingPlan

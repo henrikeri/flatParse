@@ -49,6 +49,16 @@ public sealed record ProcessingConfiguration
     public string XisfHintsMaster { get; init; } = "compression-codec zlib+sh; compression-level 9; checksum sha1";
     public RejectionSettings Rejection { get; init; } = new();
     public DarkMatchingOptions DarkMatching { get; init; } = new();
+
+    /// <summary>
+    /// If true, require darks for processing. If missing, skip and log as failed.
+    /// </summary>
+    public bool RequireDarks { get; init; } = true;
+
+    /// <summary>
+    /// If true, allow processing without flats. If missing, process and tag in log.
+    /// </summary>
+    public bool AllowProcessingWithoutFlats { get; init; } = false;
 }
 
 /// <summary>
