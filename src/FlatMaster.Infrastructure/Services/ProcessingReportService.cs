@@ -44,8 +44,10 @@ public sealed class ProcessingReportService : IProcessingReportService
         var diagnosticList = matchingDiagnostics.ToList();
         var darkList = darkCatalog.ToList();
 
-        var succeeded = diagnosticList.Count(d => d.SelectedDark != null);
-        var failed = diagnosticList.Count(d => d.SelectedDark == null);
+        var succeeded = diagnosticList.Count(d =>
+            d.SelectedDark != null ||
+            (!config.RequireDarks && d.SelectionReason.Contains("No suitable dark", StringComparison.OrdinalIgnoreCase)));
+        var failed = diagnosticList.Count - succeeded;
 
         var tempDeltas = diagnosticList
             .Where(d => d.TemperatureDeltaC.HasValue)

@@ -161,9 +161,7 @@
                                       IsChecked="{Binding RequireDarks}" 
                                       Foreground="{StaticResource PrimaryTextBrush}" Margin="0,0,0,8"/>
 
-                            <CheckBox Content="Allow processing without flats (tag in log if processed without)" 
-                                      IsChecked="{Binding AllowProcessingWithoutFlats}" 
-                                      Foreground="{StaticResource PrimaryTextBrush}" Margin="0,0,0,24"/>
+                            <!-- Removed: AllowProcessingWithoutFlats option — behavior is now fixed to matching priority -->
 
                             <!-- File Roots -->
                             <TextBlock Text="Flat Base Directories" FontSize="14" FontWeight="SemiBold" 
@@ -561,7 +559,7 @@
                 BorderThickness="0,1,0,0" BorderBrush="{StaticResource BorderBrush}"
                 Padding="24,12">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                <TextBlock Text="FlatMaster v1.1" Foreground="{StaticResource SecondaryTextBrush}"/>
+                <TextBlock Text="FlatMaster v1.2" Foreground="{StaticResource SecondaryTextBrush}"/>
                 <TextBlock Text="•" Margin="12,0" Foreground="{StaticResource BorderBrush}"/>
                 <TextBlock Text=".NET 8 + WPF" Foreground="{StaticResource SecondaryTextBrush}"/>
                 <TextBlock Text="•" Margin="12,0" Foreground="{StaticResource BorderBrush}"/>

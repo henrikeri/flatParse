@@ -9,9 +9,11 @@ using FlatMaster.Core.Models;
 using FlatMaster.Infrastructure.Services;
 
 // ── Configuration ──
-const string FlatsRoot = @"C:\Users\riise\Pictures\RC16";
-const string DarksRoot = @"C:\Users\riise\Pictures\RC Darks";
-const string PIExe = @"C:\Program Files\PixInsight\bin\PixInsight.exe";
+var FlatsRoot = Environment.GetEnvironmentVariable("FM_FLATS_ROOT") ?? @"C:\Users\riise\Pictures\RC16";
+var DarksRoot = Environment.GetEnvironmentVariable("FM_DARKS_ROOT") ?? @"C:\Users\riise\Pictures\RC Darks";
+var PIExe = Environment.GetEnvironmentVariable("FM_PI_EXE") ?? @"C:\Program Files\PixInsight\bin\PixInsight.exe";
+var SkipNative = string.Equals(Environment.GetEnvironmentVariable("FM_SKIP_NATIVE"), "1", StringComparison.OrdinalIgnoreCase);
+var SingleTest = string.Equals(Environment.GetEnvironmentVariable("FM_SINGLE_TEST"), "1", StringComparison.OrdinalIgnoreCase);
 var tmpBase = Path.Combine(Path.GetTempPath(), "FlatMaster_Compare");
 
 // ── Set up services (manual DI) ──
@@ -51,9 +53,9 @@ var darkProgress = new Progress<ScanProgress>(p =>
 var darks = await fileScanner.ScanDarkLibraryAsync(new[] { DarksRoot }, darkProgress);
 Console.WriteLine($"\r  Found {darks.Count} dark frames.                                        ");
 
-if (flatJobs.Count == 0 || darks.Count == 0)
+if (flatJobs.Count == 0)
 {
-    Console.WriteLine("ERROR: No flats or darks found. Aborting.");
+    Console.WriteLine("ERROR: No flats found. Aborting.");
     return;
 }
 
@@ -81,14 +83,17 @@ candidates.Sort((a, b) => a.group.FilePaths.Count.CompareTo(b.group.FilePaths.Co
 var testGroups = new List<(DirectoryJob job, ExposureGroup group, string label)>();
 testGroups.Add((candidates[0].job, candidates[0].group, "Small stack"));
 
-var medium = candidates.FirstOrDefault(c => c.group.FilePaths.Count >= 10 && c.group.FilePaths.Count <= 25);
-if (medium.job != null)
-    testGroups.Add((medium.job, medium.group, "Medium stack"));
-else
+if (!SingleTest)
 {
-    var larger = candidates.FirstOrDefault(c => c.group.FilePaths.Count >= 6);
-    if (larger.job != null && larger.group != candidates[0].group)
-        testGroups.Add((larger.job, larger.group, "Larger stack"));
+    var medium = candidates.FirstOrDefault(c => c.group.FilePaths.Count >= 10 && c.group.FilePaths.Count <= 25);
+    if (medium.job != null)
+        testGroups.Add((medium.job, medium.group, "Medium stack"));
+    else
+    {
+        var larger = candidates.FirstOrDefault(c => c.group.FilePaths.Count >= 6);
+        if (larger.job != null && larger.group != candidates[0].group)
+            testGroups.Add((larger.job, larger.group, "Larger stack"));
+    }
 }
 
 var darkMatchOpts = new DarkMatchingOptions
@@ -140,7 +145,8 @@ async Task RunComparison(DirectoryJob bestJob, ExposureGroup bestGroup,
         XisfHintsCal = "",
         XisfHintsMaster = "",
         Rejection = new RejectionSettings { LowSigma = 5.0, HighSigma = 5.0 },
-        DarkMatching = matchOpts
+        DarkMatching = matchOpts,
+        RequireDarks = false
     };
 
     var nativeJob = new DirectoryJob
@@ -177,11 +183,24 @@ async Task RunComparison(DirectoryJob bestJob, ExposureGroup bestGroup,
 
 // ── Step 5: Run Native Engine ──
     Console.WriteLine();
-    Console.WriteLine("  ── Running Native Engine ──");
     var sw = Stopwatch.StartNew();
-    var nativeResult = await nativeEngine.ExecuteAsync(nativePlan, logProgress, CancellationToken.None);
-    var nativeMs = sw.ElapsedMilliseconds;
-    Console.WriteLine($"  Native: {(nativeResult.Success ? "SUCCESS" : "FAILED")} in {nativeMs:N0}ms");
+    ProcessingResult nativeResult;
+    long nativeMs;
+
+    if (!SkipNative)
+    {
+        Console.WriteLine("  ── Running Native Engine ──");
+        nativeResult = await nativeEngine.ExecuteAsync(nativePlan, logProgress, CancellationToken.None);
+        nativeMs = sw.ElapsedMilliseconds;
+        Console.WriteLine($"  Native: {(nativeResult.Success ? "SUCCESS" : "FAILED")} in {nativeMs:N0}ms");
+    }
+    else
+    {
+        nativeResult = new ProcessingResult { Success = true, ExitCode = 0, Output = "Skipped native engine." };
+        nativeMs = 0;
+        Console.WriteLine("  ── Running Native Engine ──");
+        Console.WriteLine("  Native: SKIPPED");
+    }
 
     // ── Step 6: Run PixInsight Engine ──
     Console.WriteLine();
@@ -197,6 +216,12 @@ async Task RunComparison(DirectoryJob bestJob, ExposureGroup bestGroup,
         Console.WriteLine("  ERROR: One or both engines failed.");
         if (!nativeResult.Success) Console.WriteLine($"    Native: {nativeResult.ErrorMessage}");
         if (!piResult.Success) Console.WriteLine($"    PI: {piResult.ErrorMessage}");
+        return;
+    }
+
+    if (SkipNative)
+    {
+        Console.WriteLine("  PixInsight smoke test passed (native comparison skipped).");
         return;
     }
 

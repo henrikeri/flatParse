@@ -29,6 +29,7 @@ using WpfMessageBox = System.Windows.MessageBox;
 using WpfMessageBoxButton = System.Windows.MessageBoxButton;
 using WpfMessageBoxImage = System.Windows.MessageBoxImage;
 using WpfOpenFileDialog = Microsoft.Win32.OpenFileDialog;
+using WpfOpenFolderDialog = Microsoft.Win32.OpenFolderDialog;
 
 namespace FlatMaster.WPF.ViewModels;
 
@@ -37,8 +38,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _requireDarks = true;
 
-    [ObservableProperty]
-    private bool _allowProcessingWithoutFlats = false;
+    // Deprecated: processing without flats controlled by matching priority; UI option removed
     private readonly IFileScannerService _fileScanner;
     private readonly IDarkMatchingService _darkMatcher;
     private readonly IPixInsightService _pixInsight;
@@ -143,11 +143,13 @@ public partial class MainViewModel : ObservableObject
 
         _pixInsightPath = _configuration["AppSettings:PixInsightExecutable"] ?? "";
         _outputRootPath = _configuration["OutputConfiguration:OutputRootPath"] ?? "D:\\fmOutput";
+        if (bool.TryParse(_configuration["ProcessingDefaults:RequireDarks"], out var requireDarks))
+            RequireDarks = requireDarks;
         
         var outputMode = _configuration["OutputConfiguration:Mode"] ?? "InlineInSource";
         _useReplicatedOutput = outputMode.Equals("ReplicatedSeparateTree", StringComparison.OrdinalIgnoreCase);
         
-        Log($"FlatMaster v1.0 - Initialized at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        Log($"FlatMaster v1.2 - Initialized at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         Log($"Session log: {GetSessionLogPath()}");
     }
 
@@ -227,20 +229,16 @@ public partial class MainViewModel : ObservableObject
 
     private static string? PickFolder(string title)
     {
-        var dialog = new WpfOpenFileDialog
+        var dialog = new WpfOpenFolderDialog
         {
             Title = title,
-            CheckFileExists = false,
-            CheckPathExists = true,
-            ValidateNames = false,
-            FileName = "Select Folder"
+            Multiselect = false
         };
 
         if (dialog.ShowDialog() != true)
             return null;
 
-        var selected = Path.GetDirectoryName(dialog.FileName);
-        return string.IsNullOrWhiteSpace(selected) ? null : selected;
+        return string.IsNullOrWhiteSpace(dialog.FolderName) ? null : dialog.FolderName;
     }
 
     [RelayCommand]
@@ -420,10 +418,10 @@ public partial class MainViewModel : ObservableObject
 
                 foreach (var expGroup in expGroups)
                 {
-                    var expVm = new DarkGroupViewModel(expGroup.Key.ToString("F3", CultureInfo.InvariantCulture) + "s");
+                    var expVm = new DarkGroupViewModel(expGroup.Key.ToString("F3", CultureInfo.InvariantCulture) + "s", typeVm);
                     foreach (var dark in expGroup.OrderBy(d => d.FilePath))
                     {
-                        expVm.Children.Add(new DarkFrameViewModel(dark));
+                        expVm.Children.Add(new DarkFrameViewModel(dark, expVm));
                     }
                     typeVm.Children.Add(expVm);
                 }
@@ -560,11 +558,16 @@ public partial class MainViewModel : ObservableObject
         }
 
         var selectedDarks = GetSelectedDarks();
-        if (selectedDarks.Count == 0)
+        if (selectedDarks.Count == 0 && RequireDarks)
         {
-            WpfMessageBox.Show("Please select at least one dark frame.", "No Darks", 
+            WpfMessageBox.Show("No dark or bias frames are selected. Disable 'Require darks' to allow integration without calibration when no match is found.", "No Darks", 
                 WpfMessageBoxButton.OK, WpfMessageBoxImage.Information);
             return;
+        }
+
+        if (selectedDarks.Count == 0)
+        {
+            Log("No darks selected; groups without a match will be integrated without dark subtraction.");
         }
 
         _cancellationTokenSource?.Cancel();
@@ -606,8 +609,7 @@ public partial class MainViewModel : ObservableObject
                     MaxTempDeltaC = double.Parse(_configuration["DarkMatching:MaxTempDeltaC"] ?? "5.0", CultureInfo.InvariantCulture),
                     AllowNearestExposureWithOptimize = bool.Parse(_configuration["DarkMatching:AllowNearestExposureWithOptimize"] ?? "true")
                 },
-                RequireDarks = RequireDarks,
-                AllowProcessingWithoutFlats = AllowProcessingWithoutFlats
+                RequireDarks = RequireDarks
             };
 
             var plan = new ProcessingPlan
@@ -847,10 +849,95 @@ public partial class DarkGroupViewModel : ObservableObject
 
     public string Name { get; }
     public ObservableCollection<object> Children { get; } = new();
+    public DarkGroupViewModel? Parent { get; }
+    private bool _isSyncingSelection;
 
-    public DarkGroupViewModel(string name)
+    public DarkGroupViewModel(string name, DarkGroupViewModel? parent = null)
     {
         Name = name;
+        Parent = parent;
+    }
+
+    partial void OnIsSelectedChanged(bool value)
+    {
+        if (_isSyncingSelection)
+            return;
+
+        _isSyncingSelection = true;
+        try
+        {
+            foreach (var child in Children)
+            {
+                if (child is DarkGroupViewModel group)
+                    group.SetSelectedRecursive(value);
+                else if (child is DarkFrameViewModel frame)
+                    frame.SetSelectedFromParent(value);
+            }
+        }
+        finally
+        {
+            _isSyncingSelection = false;
+        }
+
+        Parent?.SyncFromChildren();
+    }
+
+    internal void SetSelectedRecursive(bool value)
+    {
+        _isSyncingSelection = true;
+        try
+        {
+            if (IsSelected != value)
+                IsSelected = value;
+
+            foreach (var child in Children)
+            {
+                if (child is DarkGroupViewModel group)
+                    group.SetSelectedRecursive(value);
+                else if (child is DarkFrameViewModel frame)
+                    frame.SetSelectedFromParent(value);
+            }
+        }
+        finally
+        {
+            _isSyncingSelection = false;
+        }
+    }
+
+    internal void SyncFromChildren()
+    {
+        if (_isSyncingSelection || Children.Count == 0)
+            return;
+
+        var allSelected = true;
+        foreach (var child in Children)
+        {
+            var isChildSelected = child switch
+            {
+                DarkGroupViewModel group => group.IsSelected,
+                DarkFrameViewModel frame => frame.IsSelected,
+                _ => false
+            };
+
+            if (!isChildSelected)
+            {
+                allSelected = false;
+                break;
+            }
+        }
+
+        _isSyncingSelection = true;
+        try
+        {
+            if (IsSelected != allSelected)
+                IsSelected = allSelected;
+        }
+        finally
+        {
+            _isSyncingSelection = false;
+        }
+
+        Parent?.SyncFromChildren();
     }
 }
 
@@ -860,11 +947,36 @@ public partial class DarkFrameViewModel : ObservableObject
     private bool _isSelected = true;
 
     public DarkFrame DarkFrame { get; }
+    public DarkGroupViewModel Parent { get; }
     public string FileName => Path.GetFileName(DarkFrame.FilePath);
+    private bool _isSyncingSelection;
 
-    public DarkFrameViewModel(DarkFrame darkFrame)
+    public DarkFrameViewModel(DarkFrame darkFrame, DarkGroupViewModel parent)
     {
         DarkFrame = darkFrame;
+        Parent = parent;
+    }
+
+    partial void OnIsSelectedChanged(bool value)
+    {
+        if (_isSyncingSelection)
+            return;
+
+        Parent.SyncFromChildren();
+    }
+
+    internal void SetSelectedFromParent(bool value)
+    {
+        _isSyncingSelection = true;
+        try
+        {
+            if (IsSelected != value)
+                IsSelected = value;
+        }
+        finally
+        {
+            _isSyncingSelection = false;
+        }
     }
 }
 

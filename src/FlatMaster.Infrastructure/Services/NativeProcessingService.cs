@@ -1,4 +1,4 @@
-// Copyright (C) 2026 Henrik E. Riise
+﻿// Copyright (C) 2026 Henrik E. Riise
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -46,7 +46,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
     {
         var io = new FitsImageIO(_logger);
         _logger.LogInformation("Native Processing Engine started");
-        progress.Report("═══ Native Processing Engine ═══");
+        progress.Report("â•â•â• Native Processing Engine â•â•â•");
 
         if (plan.Jobs.Count == 0)
         {
@@ -64,7 +64,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
         foreach (var job in plan.Jobs)
         {
             if (cancellationToken.IsCancellationRequested) break;
-            progress.Report($"\n── Job: {job.DirectoryPath} ──");
+            progress.Report($"\nâ”€â”€ Job: {job.DirectoryPath} â”€â”€");
 
             foreach (var group in job.ExposureGroups)
             {
@@ -77,12 +77,19 @@ public sealed class NativeProcessingService : IImageProcessingEngine
 
                     if (darkMatch == null)
                     {
-                        progress.Report(string.Format(CultureInfo.InvariantCulture, "  ✗ No dark for {0:F3}s — skipped", group.ExposureTime));
-                        failureCount++;
-                        continue;
-                    }
+                        if (plan.Configuration.RequireDarks)
+                        {
+                            progress.Report(string.Format(CultureInfo.InvariantCulture, "  ! No dark/bias for {0:F3}s - skipped", group.ExposureTime));
+                            failureCount++;
+                            continue;
+                        }
 
-                    progress.Report($"  Dark: {Path.GetFileName(darkMatch.FilePath)} [{darkMatch.MatchKind}]");
+                        progress.Report(string.Format(CultureInfo.InvariantCulture, "  ! No dark/bias for {0:F3}s - integrating flats without subtraction", group.ExposureTime));
+                    }
+                    else
+                    {
+                        progress.Report($"  Dark: {Path.GetFileName(darkMatch.FilePath)} [{darkMatch.MatchKind}]");
+                    }
 
                     await ProcessGroupAsync(
                         io, group, darkMatch, job, plan.Configuration,
@@ -93,14 +100,14 @@ public sealed class NativeProcessingService : IImageProcessingEngine
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed group {Exp}s", group.ExposureTime);
-                    progress.Report($"  ✗ ERROR: {ex.Message}");
+                    progress.Report($"  âœ— ERROR: {ex.Message}");
                     failureCount++;
                 }
             }
         }
 
         sw.Stop();
-        var summary = string.Format(CultureInfo.InvariantCulture, "Done in {0:F1}s — {1} succeeded, {2} failed", sw.Elapsed.TotalSeconds, successCount, failureCount);
+        var summary = string.Format(CultureInfo.InvariantCulture, "Done in {0:F1}s â€” {1} succeeded, {2} failed", sw.Elapsed.TotalSeconds, successCount, failureCount);
         progress.Report($"\n{summary}");
 
         return new ProcessingResult
@@ -111,12 +118,12 @@ public sealed class NativeProcessingService : IImageProcessingEngine
         };
     }
 
-    // ────────────────────── Per-group pipeline ──────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Per-group pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private async Task ProcessGroupAsync(
         FitsImageIO io,
         ExposureGroup group,
-        DarkMatchResult darkMatch,
+        DarkMatchResult? darkMatch,
         DirectoryJob job,
         ProcessingConfiguration config,
         IProgress<string> progress,
@@ -125,39 +132,46 @@ public sealed class NativeProcessingService : IImageProcessingEngine
         // Sort file paths for deterministic processing order (matches PI's filesystem-order enumeration)
         var flatPaths = group.FilePaths.OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase).ToList();
         int n = flatPaths.Count;
-        progress.Report(string.Format(CultureInfo.InvariantCulture, "  Loading {0} flat frames ({1:F3}s)…", n, group.ExposureTime));
+        progress.Report(string.Format(CultureInfo.InvariantCulture, "  Loading {0} flat frames ({1:F3}s)â€¦", n, group.ExposureTime));
 
-        // 1. Load dark master
-        var darkImage = await io.ReadAsync(darkMatch.FilePath, ct);
-        progress.Report($"  Dark loaded: {darkImage.Width}×{darkImage.Height}");
-
-        if (darkMatch.OptimizeRequired)
+        // 1. Load dark/bias frame when available.
+        FitsImageIO.ImageData? darkImage = null;
+        if (darkMatch != null)
         {
-            // Scale the dark by the exposure ratio  (flatExp / darkExp)
-            double darkExp = ParseExposure(darkImage.Headers);
-            if (darkExp > 0 && group.ExposureTime > 0)
+            darkImage = await io.ReadAsync(darkMatch.FilePath, ct);
+            progress.Report($"  Dark loaded: {darkImage.Width}x{darkImage.Height}");
+
+            if (darkMatch.OptimizeRequired)
             {
-                double scale = group.ExposureTime / darkExp;
-                progress.Report(string.Format(CultureInfo.InvariantCulture, "  Optimizing dark: scale ×{0:F4} ({1:F3}s → {2:F3}s)", scale, darkExp, group.ExposureTime));
-                ScalePixels(darkImage.Pixels, scale);
+                // Scale the dark by the exposure ratio  (flatExp / darkExp)
+                double darkExp = ParseExposure(darkImage.Headers);
+                if (darkExp > 0 && group.ExposureTime > 0)
+                {
+                    double scale = group.ExposureTime / darkExp;
+                    progress.Report(string.Format(CultureInfo.InvariantCulture, "  Optimizing dark: scale x{0:F4} ({1:F3}s -> {2:F3}s)", scale, darkExp, group.ExposureTime));
+                    ScalePixels(darkImage.Pixels, scale);
+                }
             }
         }
 
-        // 2. Load and calibrate each flat (subtract dark)
+        // 2. Load and calibrate each flat (subtract dark/bias when available)
         var calibrated = new FitsImageIO.ImageData[n];
         for (int i = 0; i < n; i++)
         {
             ct.ThrowIfCancellationRequested();
             var flat = await io.ReadAsync(flatPaths[i], ct);
-            ValidateDimensions(flat, darkImage, flatPaths[i]);
-            SubtractDark(flat.Pixels, darkImage.Pixels);
+            if (darkImage != null)
+            {
+                ValidateDimensions(flat, darkImage, flatPaths[i]);
+                SubtractDark(flat.Pixels, darkImage.Pixels);
+            }
             calibrated[i] = flat;
             if ((i + 1) % 5 == 0 || i == n - 1)
                 progress.Report($"  Calibrated {i + 1}/{n}");
         }
 
-        // 3. Normalise to multiplicative (divide each frame by its median — matches PI)
-        progress.Report("Normalising (multiplicative, median-based)…");
+        // 3. Normalise to multiplicative (divide each frame by its median â€” matches PI)
+        progress.Report("Normalising (multiplicative, median-based)â€¦");
         var medians = new double[n];
         for (int i = 0; i < n; i++)
         {
@@ -169,9 +183,9 @@ public sealed class NativeProcessingService : IImageProcessingEngine
             "  Frame medians: [{0}]", string.Join(", ", medians.Select(m => m.ToString("F6", CultureInfo.InvariantCulture)))));
 
         // 3b. Compute EqualizeFluxes rejection-normalization factors
-        //     After multiplicative normalization, each frame's median ≈ 1.0.
+        //     After multiplicative normalization, each frame's median â‰ˆ 1.0.
         //     EqualizeFluxes additionally scales by refMean/frameMean so rejection
-        //     testing uses equalized pixel values — matches PI's rejectionNormalization = EqualizeFluxes.
+        //     testing uses equalized pixel values â€” matches PI's rejectionNormalization = EqualizeFluxes.
         var eqFactors = new double[n];
         double refNormMean = ComputeMean(calibrated[0].Pixels);
         for (int i = 0; i < n; i++)
@@ -182,7 +196,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
 
         // 4. Integrate
         var rej = config.Rejection;
-        progress.Report(string.Format(CultureInfo.InvariantCulture, "  Integrating: Winsorized Sigma Clip (σ_low={0:F1}, σ_high={1:F1})…", rej.LowSigma, rej.HighSigma));
+        progress.Report(string.Format(CultureInfo.InvariantCulture, "  Integrating: Winsorized Sigma Clip (Ïƒ_low={0:F1}, Ïƒ_high={1:F1})â€¦", rej.LowSigma, rej.HighSigma));
 
         long pixelCount = (long)calibrated[0].Width * calibrated[0].Height * calibrated[0].Channels;
         var result = new double[pixelCount];
@@ -206,7 +220,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
                 rej.LowSigma, rej.HighSigma, winsorizationCutoff: 5.0, maxIterations: 10, eqFactors);
         }
 
-        // 5. Rescale result by reference median (first frame) — matches PI multiplicative normalization
+        // 5. Rescale result by reference median (first frame) â€” matches PI multiplicative normalization
         double referenceMedian = medians[0];
         if (Math.Abs(referenceMedian) > 1e-15)
         {
@@ -238,10 +252,10 @@ public sealed class NativeProcessingService : IImageProcessingEngine
 
         progress.Report($"  Writing: {masterPath}");
         await io.WriteXisfAsync(masterPath, master, ct);
-        progress.Report($"  ✓ Master flat written ({master.Width}×{master.Height}, {n} frames integrated)");
+        progress.Report($"  âœ“ Master flat written ({master.Width}Ã—{master.Height}, {n} frames integrated)");
     }
 
-    // ════════════════════ Integration Algorithms ════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• Integration Algorithms â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     /// <summary>
     /// Winsorized Sigma Clipping: iterative rejection where outliers are replaced
@@ -257,8 +271,8 @@ public sealed class NativeProcessingService : IImageProcessingEngine
         double[]? eqFactors = null)
     {
         int n = frames.Length;
-        var eqCol = new double[n];       // equalized values — used for rejection testing
-        var origCol = new double[n];     // original normalized values — used for final average
+        var eqCol = new double[n];       // equalized values â€” used for rejection testing
+        var origCol = new double[n];     // original normalized values â€” used for final average
         var included = new bool[n];
         var winsorized = new double[n];
         bool hasEq = eqFactors != null;
@@ -353,7 +367,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
             }
             else
             {
-                // All rejected — fallback to median of originals
+                // All rejected â€” fallback to median of originals
                 Array.Sort(origCol);
                 output[p] = origCol[n / 2];
             }
@@ -413,7 +427,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
         }
     }
 
-    // ════════════════════ Pixel Math Helpers ════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• Pixel Math Helpers â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
     private static void SubtractDark(double[] flat, double[] dark)
     {
@@ -447,7 +461,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
     /// Computes the exact median using a 3-pass histogram refinement approach.
     /// Pass 1: find min/max range.  Pass 2: 1M-bin histogram to locate the median bin.
     /// Pass 3: collect and sort only the values in that bin for a precise result.
-    /// O(n) time, ~4 MB histogram — no large array copy needed.
+    /// O(n) time, ~4 MB histogram â€” no large array copy needed.
     /// </summary>
     private static double ComputeMedian(double[] pixels)
     {
@@ -464,7 +478,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
         }
         if (max - min < 1e-20) return min;
 
-        // Pass 2: histogram — locate the bin containing the median
+        // Pass 2: histogram â€” locate the bin containing the median
         const int numBins = 1 << 20; // 1,048,576 bins
         double scale = (numBins - 1.0) / (max - min);
         var hist = new int[numBins];
@@ -525,7 +539,7 @@ public sealed class NativeProcessingService : IImageProcessingEngine
     {
         if (a.Width != b.Width || a.Height != b.Height)
             throw new InvalidOperationException(
-                $"Dimension mismatch: {a.Width}×{a.Height} vs {b.Width}×{b.Height} ({context})");
+                $"Dimension mismatch: {a.Width}Ã—{a.Height} vs {b.Width}Ã—{b.Height} ({context})");
     }
 
     private static double ParseExposure(Dictionary<string, string> h)

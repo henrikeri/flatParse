@@ -71,7 +71,7 @@ public class DarkMatchingServiceTests
     }
 
     [Fact]
-    public void FindBestDark_NoExactMatch_ReturnsNearestWithOptimize()
+    public void FindBestDark_NoExactMatchWithin2s_ReturnsNearestWithoutOptimize()
     {
         // Arrange
         var exposureGroup = new ExposureGroup
@@ -104,8 +104,149 @@ public class DarkMatchingServiceTests
 
         // Assert
         result.Should().NotBeNull();
+        result!.OptimizeRequired.Should().BeFalse();
+        result.MatchKind.Should().Contain("nearest<=2s");
+    }
+
+    [Fact]
+    public void FindBestDark_NoExactMatchWithin10s_ReturnsNearestWithOptimize()
+    {
+        // Arrange
+        var exposureGroup = new ExposureGroup
+        {
+            ExposureTime = 15.0,
+            FilePaths = new List<string> { "flat1.fits", "flat2.fits", "flat3.fits" },
+            MatchingCriteria = new MatchingCriteria()
+        };
+
+        var darkCatalog = new List<DarkFrame>
+        {
+            new DarkFrame
+            {
+                FilePath = "masterdark_8.0s.xisf",
+                Type = ImageType.MasterDark,
+                ExposureTime = 8.0
+            },
+            new DarkFrame
+            {
+                FilePath = "masterdark_30.0s.xisf",
+                Type = ImageType.MasterDark,
+                ExposureTime = 30.0
+            }
+        };
+
+        var options = new DarkMatchingOptions { AllowNearestExposureWithOptimize = true };
+
+        // Act
+        var result = _service.FindBestDark(exposureGroup, darkCatalog, options);
+
+        // Assert
+        result.Should().NotBeNull();
         result!.OptimizeRequired.Should().BeTrue();
-        result.MatchKind.Should().Contain("nearest+optimize");
+        result.MatchKind.Should().Contain("nearest<=10s+optimize");
+    }
+
+    [Fact]
+    public void FindBestDark_Exactly2sDelta_IncludesInNoOptimizeTier()
+    {
+        // Arrange
+        var exposureGroup = new ExposureGroup
+        {
+            ExposureTime = 20.0,
+            FilePaths = new List<string> { "flat1.fits", "flat2.fits", "flat3.fits" },
+            MatchingCriteria = new MatchingCriteria()
+        };
+
+        var darkCatalog = new List<DarkFrame>
+        {
+            new DarkFrame
+            {
+                FilePath = "masterdark_18.0s.xisf",
+                Type = ImageType.MasterDark,
+                ExposureTime = 18.0
+            }
+        };
+
+        var options = new DarkMatchingOptions { AllowNearestExposureWithOptimize = true };
+
+        // Act
+        var result = _service.FindBestDark(exposureGroup, darkCatalog, options);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.OptimizeRequired.Should().BeFalse();
+        result.MatchKind.Should().Contain("nearest<=2s");
+    }
+
+    [Fact]
+    public void FindBestDark_Exactly10sDelta_IncludesInOptimizeTier()
+    {
+        // Arrange
+        var exposureGroup = new ExposureGroup
+        {
+            ExposureTime = 20.0,
+            FilePaths = new List<string> { "flat1.fits", "flat2.fits", "flat3.fits" },
+            MatchingCriteria = new MatchingCriteria()
+        };
+
+        var darkCatalog = new List<DarkFrame>
+        {
+            new DarkFrame
+            {
+                FilePath = "masterdark_10.0s.xisf",
+                Type = ImageType.MasterDark,
+                ExposureTime = 10.0
+            }
+        };
+
+        var options = new DarkMatchingOptions { AllowNearestExposureWithOptimize = true };
+
+        // Act
+        var result = _service.FindBestDark(exposureGroup, darkCatalog, options);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.OptimizeRequired.Should().BeTrue();
+        result.MatchKind.Should().Contain("nearest<=10s+optimize");
+    }
+
+    [Fact]
+    public void FindBestDark_NearestDisabled_FallsBackToBias()
+    {
+        // Arrange
+        var exposureGroup = new ExposureGroup
+        {
+            ExposureTime = 15.0,
+            FilePaths = new List<string> { "flat1.fits", "flat2.fits", "flat3.fits" },
+            MatchingCriteria = new MatchingCriteria()
+        };
+
+        var darkCatalog = new List<DarkFrame>
+        {
+            new DarkFrame
+            {
+                FilePath = "masterdark_8.0s.xisf",
+                Type = ImageType.MasterDark,
+                ExposureTime = 8.0
+            },
+            new DarkFrame
+            {
+                FilePath = "masterbias.xisf",
+                Type = ImageType.MasterBias,
+                ExposureTime = 0.0
+            }
+        };
+
+        var options = new DarkMatchingOptions { AllowNearestExposureWithOptimize = false };
+
+        // Act
+        var result = _service.FindBestDark(exposureGroup, darkCatalog, options);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.FilePath.Should().Be("masterbias.xisf");
+        result.MatchKind.Should().Be("MasterBias");
+        result.OptimizeRequired.Should().BeFalse();
     }
 
     [Fact]

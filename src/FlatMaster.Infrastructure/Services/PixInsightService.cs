@@ -15,9 +15,11 @@
 
 using System.Diagnostics;
 using System.Text;
+using System.IO;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Globalization;
 using FlatMaster.Core.Interfaces;
 using FlatMaster.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -30,42 +32,21 @@ namespace FlatMaster.Infrastructure.Services;
 public sealed class PixInsightService : IPixInsightService
 {
     private readonly ILogger<PixInsightService> _logger;
-  private readonly IDarkMatchingService _darkMatchingService;
 
-    public PixInsightService(ILogger<PixInsightService> logger, IDarkMatchingService darkMatchingService)
+    public PixInsightService(ILogger<PixInsightService> logger)
     {
       _logger = logger;
-      _darkMatchingService = darkMatchingService;
     }
 
     public string GeneratePJSRScript(ProcessingPlan plan)
     {
         var sentinelPath = NormalizePath(Path.Combine(Path.GetTempPath(), "flatmaster_sentinel.txt"));
+        return GeneratePJSRScript(plan, sentinelPath);
+    }
 
-        // Precompute best darks per exposure using the C# dark-matcher so the PixInsight script
-        // can rely on preselected choices instead of repeating matching in JS.
-        var preselected = new Dictionary<string, object?>();
-        var darkCatalog = plan.SelectedDarks.ToList();
-        var matchOptions = plan.Configuration.DarkMatching;
-
-        foreach (var job in plan.SelectedJobs)
-        {
-          foreach (var g in job.ExposureGroups)
-          {
-            var k = (Math.Round(g.ExposureTime * 1000) / 1000.0).ToString(CultureInfo.InvariantCulture);
-            if (preselected.ContainsKey(k)) continue;
-            var best = _darkMatchingService.FindBestDark(g, darkCatalog, matchOptions);
-            if (best != null)
-            {
-              preselected[k] = new
-              {
-                path = NormalizePath(best.FilePath),
-                optimize = best.OptimizeRequired,
-                kind = best.MatchKind
-              };
-            }
-          }
-        }
+    private string GeneratePJSRScript(ProcessingPlan plan, string sentinelPath)
+    {
+        sentinelPath = NormalizePath(sentinelPath);
 
         var config = new
         {
@@ -73,7 +54,7 @@ public sealed class PixInsightService : IPixInsightService
             {
                 dirPath = NormalizePath(j.DirectoryPath),
                 outRoot = NormalizePath(j.OutputRootPath),
-                relDir = j.RelativeDirectory.Replace("\\", "/"),
+                relDir = (j.RelativeDirectory ?? string.Empty).Replace("\\", "/"),
                 groups = j.ExposureGroups.Select(g => new
                 {
                     exposure = g.ExposureTime,
@@ -116,7 +97,6 @@ public sealed class PixInsightService : IPixInsightService
                 highSigma = plan.Configuration.Rejection.HighSigma
             },
             sentinelPath,
-          preselected = preselected,
             deleteCalibrated = plan.Configuration.DeleteCalibratedFlats
         };
 
@@ -124,17 +104,57 @@ public sealed class PixInsightService : IPixInsightService
         // JSON is valid JavaScript, so var CFG = {...}; works as direct assignment
         var jsonConfig = JsonSerializer.Serialize(config, new JsonSerializerOptions 
         { 
-            WriteIndented = false,
+            WriteIndented = true,
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         });
+        var jsConfigObjectLiteral = ConvertJsonToJsObjectLiteral(jsonConfig);
+
+        var debugScriptMode = Environment.GetEnvironmentVariable("FM_PI_DEBUG_SCRIPT");
+        if (string.Equals(debugScriptMode, "touch", StringComparison.OrdinalIgnoreCase))
+        {
+            return NormalizeScriptLineEndings($@"var __SENTINEL = ""{sentinelPath}"";
+function touch(p, s){{ try{{ var f=new File; f.createForWriting(p); f.outTextLn(s); f.close(); }}catch(e){{}} }}
+touch(__SENTINEL, ""OK"");");
+        }
+        if (string.Equals(debugScriptMode, "cfg", StringComparison.OrdinalIgnoreCase))
+        {
+            return NormalizeScriptLineEndings($@"var __SENTINEL = ""{sentinelPath}"";
+function touch(p, s){{ try{{ var f=new File; f.createForWriting(p); f.outTextLn(s); f.close(); }}catch(e){{}} }}
+var CFG = {jsConfigObjectLiteral};
+touch(__SENTINEL, ""OK"");");
+        }
+        if (string.Equals(debugScriptMode, "logic", StringComparison.OrdinalIgnoreCase))
+        {
+            return NormalizeScriptLineEndings($@"var __SENTINEL = ""{sentinelPath}"";
+function touch(p, s){{ try{{ var f=new File; f.createForWriting(p); f.outTextLn(s); f.close(); }}catch(e){{}} }}
+var CFG = {jsConfigObjectLiteral};
+var jobs = CFG.plan || [];
+var n = 0;
+for (var j=0; j<jobs.length; j++) {{
+  var gs = jobs[j].groups || [];
+  for (var g=0; g<gs.length; g++) n += (gs[g].files || []).length;
+}}
+touch(__SENTINEL, ""OK:files="" + n);");
+        }
+        if (string.Equals(debugScriptMode, "probe-ii", StringComparison.OrdinalIgnoreCase))
+        {
+            return NormalizeScriptLineEndings($@"var __SENTINEL = ""{sentinelPath}"";
+function touch(p, s){{ try{{ var f=new File; f.createForWriting(p); f.outTextLn(s); f.close(); }}catch(e){{}} }}
+try {{
+  var ii = new ImageIntegration;
+  touch(__SENTINEL, ""OK:ImageIntegration"");
+}} catch(e) {{
+  touch(__SENTINEL, ""ERROR:"" + e);
+}}");
+        }
         
         // Build config + template as one script
         // sentinel path is set independently so the catch block works even if CFG parse fails
         var script = GetPJSRTemplate()
             .Replace("%SENTINEL_PATH%", sentinelPath)
-            .Replace("%CONFIG_JSON_LITERAL%", jsonConfig);
+            .Replace("%CONFIG_JS_OBJECT_LITERAL%", jsConfigObjectLiteral);
         
-        return script;
+        return NormalizeScriptLineEndings(script);
     }
 
     public async Task<ProcessingResult> ProcessJobsInBatchesAsync(
@@ -165,12 +185,15 @@ public sealed class PixInsightService : IPixInsightService
         logOutput?.Report($"[PixInsight] Executable: {pixInsightExe}");
         logOutput?.Report($"[PixInsight] Jobs: {jobList.Count}, batch size: {batchSize}");
 
-        // ── Preflight (once) ──
+        var runId = Guid.NewGuid().ToString("N");
+        var tempRoot = Path.GetTempPath();
+
+        // â”€â”€ Preflight (once) â”€â”€
         KillExistingPixInsightProcesses(logOutput);
-        var preflightSentinelPath = Path.Combine(Path.GetTempPath(), "flatmaster_preflight.txt");
+        var preflightSentinelPath = Path.Combine(tempRoot, $"flatmaster_preflight_{runId}.txt");
         if (File.Exists(preflightSentinelPath)) try { File.Delete(preflightSentinelPath); } catch { }
 
-        var preflightScriptPath = Path.Combine(Path.GetTempPath(), "flatmaster_preflight.js");
+        var preflightScriptPath = Path.Combine(tempRoot, $"flatmaster_preflight_{runId}.js");
         await File.WriteAllTextAsync(preflightScriptPath, BuildPreflightScript(preflightSentinelPath), cancellationToken);
         logOutput?.Report($"[PixInsight] Preflight script: {preflightScriptPath}");
 
@@ -191,12 +214,10 @@ public sealed class PixInsightService : IPixInsightService
         KillExistingPixInsightProcesses(logOutput);
         await Task.Delay(3000, cancellationToken);
 
-        // ── Batch loop ──
+        // â”€â”€ Batch loop â”€â”€
         int totalBatches = (jobList.Count + batchSize - 1) / batchSize;
         int succeeded = 0, failed = 0;
         var allOutput = new StringBuilder();
-        var scriptPath = Path.Combine(Path.GetTempPath(), "flatmaster_script.js");
-        var sentinelPath = Path.Combine(Path.GetTempPath(), "flatmaster_sentinel.txt");
         int totalFiles = jobList.Sum(j => j.TotalFileCount);
         int filesProcessedSoFar = 0;
 
@@ -208,7 +229,7 @@ public sealed class PixInsightService : IPixInsightService
             int firstIdx = b * batchSize + 1;
             int lastIdx = firstIdx + batchJobs.Count - 1;
             int batchFiles = batchJobs.Sum(j => j.TotalFileCount);
-            logOutput?.Report($"\n══ Folders {firstIdx}-{lastIdx} of {jobList.Count}  ({filesProcessedSoFar + batchFiles}/{totalFiles} files) ══");
+            logOutput?.Report($"\nâ•â• Folders {firstIdx}-{lastIdx} of {jobList.Count}  ({filesProcessedSoFar + batchFiles}/{totalFiles} files) â•â•");
             foreach (var j in batchJobs)
                 logOutput?.Report($"  {j.DirectoryPath}");
 
@@ -220,9 +241,11 @@ public sealed class PixInsightService : IPixInsightService
                 Configuration = plan.Configuration
             };
 
-            var script = GeneratePJSRScript(batchPlan);
+            var scriptPath = Path.Combine(tempRoot, $"flatmaster_script_{runId}_b{b + 1}.js");
+            var sentinelPath = Path.Combine(tempRoot, $"flatmaster_sentinel_{runId}_b{b + 1}.txt");
+            var script = GeneratePJSRScript(batchPlan, sentinelPath);
             await File.WriteAllTextAsync(scriptPath, script, cancellationToken);
-            logOutput?.Report($"  Script: {script.Length / 1024} KB");
+            logOutput?.Report($"  Script: {script.Length / 1024} KB ({scriptPath})");
 
             if (File.Exists(sentinelPath)) try { File.Delete(sentinelPath); } catch { }
             KillExistingPixInsightProcesses(logOutput);
@@ -233,15 +256,15 @@ public sealed class PixInsightService : IPixInsightService
             allOutput.AppendLine(batchResult.Output);
             if (batchResult.Success)
             {
-                succeeded++;
-                filesProcessedSoFar += batchFiles;
-                logOutput?.Report($"  ✓ Folders {firstIdx}-{lastIdx} done  ({filesProcessedSoFar}/{totalFiles} files)");
+              succeeded++;
+              filesProcessedSoFar += batchFiles;
+              logOutput?.Report($"  âœ“ Folders {firstIdx}-{lastIdx} done  ({filesProcessedSoFar}/{totalFiles} files)");
             }
             else
             {
-                failed++;
-                filesProcessedSoFar += batchFiles; // count them even on failure for progress
-                logOutput?.Report($"  ✗ Folders {firstIdx}-{lastIdx} FAILED: {batchResult.ErrorMessage}");
+              failed++;
+              filesProcessedSoFar += batchFiles; // count them even on failure for progress
+              logOutput?.Report($"  âœ— Folders {firstIdx}-{lastIdx} FAILED: {batchResult.ErrorMessage}");
             }
         }
 
@@ -290,9 +313,11 @@ public sealed class PixInsightService : IPixInsightService
         var normalized = NormalizePath(scriptPath);
         return new[]
         {
+            // Always force a new PI instance (-n) to avoid IPC/slot reuse issues.
+            // Keep to documented run forms and avoid -x/startup-script paths.
             new[] { "--automation-mode", "--no-startup-scripts", "-n", $"--run={normalized}", "--force-exit" },
-            new[] { $"--run={normalized}", "--force-exit" },
-            new[] { $"-x={normalized}" }
+            new[] { "--automation-mode", "-n", $"--run={normalized}", "--force-exit" },
+            new[] { "-n", $"--run={normalized}", "--force-exit" }
         };
     }
 
@@ -318,6 +343,12 @@ public sealed class PixInsightService : IPixInsightService
         {
           var variant = argsVariants[attempt];
           output.Clear();
+          var sawEmptyScriptError = false;
+          var sawInvalidInstanceIndex = false;
+          var attemptStartUtc = DateTime.UtcNow;
+          var maxAttemptDuration = expectedSentinel == "PREFLIGHT_OK"
+              ? TimeSpan.FromMinutes(2)
+              : TimeSpan.FromMinutes(20);
 
           logOutput?.Report($"[PixInsight attempt {attempt + 1}/{argsVariants.Length}] args=[{string.Join(", ", variant)}]");
           _logger.LogInformation("Starting PixInsight: {Exe} args={@Args}", pixInsightExe, variant);
@@ -341,6 +372,7 @@ public sealed class PixInsightService : IPixInsightService
 
           try
           {
+            var baselinePids = GetPixInsightPids();
             using var process = new Process { StartInfo = startInfo };
 
             process.Start();
@@ -357,6 +389,10 @@ public sealed class PixInsightService : IPixInsightService
                     output.AppendLine(line);
                     logOutput?.Report(line);
                     _logger.LogInformation("[PI stdout] {Line}", line);
+                    if (line.IndexOf("empty script", StringComparison.OrdinalIgnoreCase) >= 0)
+                        sawEmptyScriptError = true;
+                    if (line.IndexOf("invalid application instance index", StringComparison.OrdinalIgnoreCase) >= 0)
+                        sawInvalidInstanceIndex = true;
                   }
                 }
               }
@@ -384,6 +420,10 @@ public sealed class PixInsightService : IPixInsightService
                       output.AppendLine("[ERROR] " + line);
                       logOutput?.Report("[ERROR] " + line);
                       _logger.LogError("[PI stderr] {Line}", line);
+                      if (line.IndexOf("empty script", StringComparison.OrdinalIgnoreCase) >= 0)
+                          sawEmptyScriptError = true;
+                      if (line.IndexOf("invalid application instance index", StringComparison.OrdinalIgnoreCase) >= 0)
+                          sawInvalidInstanceIndex = true;
                     }
                   }
                 }
@@ -396,7 +436,71 @@ public sealed class PixInsightService : IPixInsightService
 
             try
             {
-              await process.WaitForExitAsync(cancellationToken);
+              var sentinelSeen = false;
+              var sawDetachedPixInsight = false;
+              var loggedDetached = false;
+              while (true)
+              {
+                  if (File.Exists(sentinelPath))
+                  {
+                      sentinelSeen = true;
+                      break;
+                  }
+                  var piRunning = HasDetachedPixInsightProcess(baselinePids);
+                  if (piRunning)
+                  {
+                      sawDetachedPixInsight = true;
+                      if (!loggedDetached)
+                      {
+                          loggedDetached = true;
+                          logOutput?.Report("[PixInsight] Detached script execution detected; waiting for sentinel...");
+                      }
+                  }
+
+                  // The launcher process returns quickly while script execution may continue
+                  // in a detached PixInsight instance. Wait until detached PI stops too.
+                  if (process.HasExited && !piRunning)
+                  {
+                      if (sawDetachedPixInsight || DateTime.UtcNow - attemptStartUtc > TimeSpan.FromSeconds(3))
+                      {
+                          logOutput?.Report($"[PixInsight] Launcher exited and no detached PI is running (detachedSeen={sawDetachedPixInsight}).");
+                          break;
+                      }
+                  }
+
+                  if (sawEmptyScriptError)
+                  {
+                      logOutput?.Report("[PixInsight] Detected 'Empty script' output. Terminating process.");
+                      KillExistingPixInsightProcesses(logOutput);
+                      break;
+                  }
+
+                  if (sawInvalidInstanceIndex)
+                  {
+                      logOutput?.Report("[PixInsight] Detected 'Invalid application instance index'. Terminating process and retrying with fresh instance arguments.");
+                      KillExistingPixInsightProcesses(logOutput);
+                      break;
+                  }
+
+                  if (DateTime.UtcNow - attemptStartUtc > maxAttemptDuration)
+                  {
+                      logOutput?.Report("[PixInsight] Attempt timed out waiting for sentinel. Terminating process.");
+                      KillExistingPixInsightProcesses(logOutput);
+                      break;
+                  }
+
+                  await Task.Delay(500, cancellationToken);
+              }
+
+              if (sentinelSeen)
+              {
+                  // Scripts can complete in detached PI instances; always clean up after success.
+                  KillExistingPixInsightProcesses(null);
+              }
+
+              if (!process.HasExited)
+                  await process.WaitForExitAsync(cancellationToken);
+
               await Task.WhenAll(outputTask, errorTask);
             }
             catch (OperationCanceledException)
@@ -440,7 +544,8 @@ public sealed class PixInsightService : IPixInsightService
 
             return new ProcessingResult
             {
-              Success = sentinelSuccess && exitCode == 0,
+              // Launcher exit code is not reliable for detached script execution.
+              Success = sentinelSuccess,
               ExitCode = exitCode,
               Output = output.ToString(),
               ErrorMessage = sentinelSuccess ? null : $"PixInsight reported error: {trimmed}"
@@ -462,6 +567,58 @@ public sealed class PixInsightService : IPixInsightService
         };
       }
 
+    private static HashSet<int> GetPixInsightPids()
+    {
+        var pids = new HashSet<int>();
+        try
+        {
+            var procs = Process.GetProcessesByName("PixInsight");
+            foreach (var p in procs)
+            {
+                try
+                {
+                    pids.Add(p.Id);
+                }
+                finally
+                {
+                    p.Dispose();
+                }
+            }
+        }
+        catch
+        {
+            // Best effort
+        }
+
+        return pids;
+    }
+
+    private static bool HasDetachedPixInsightProcess(HashSet<int> baselinePids)
+    {
+        try
+        {
+            var procs = Process.GetProcessesByName("PixInsight");
+            foreach (var p in procs)
+            {
+                try
+                {
+                    if (!baselinePids.Contains(p.Id))
+                        return true;
+                }
+                finally
+                {
+                    p.Dispose();
+                }
+            }
+        }
+        catch
+        {
+            // Best effort
+        }
+
+        return false;
+    }
+
     private static bool IsHarmlessStderrNoise(string line)
     {
         return line.Contains("gpu_channel_manager")
@@ -474,384 +631,64 @@ public sealed class PixInsightService : IPixInsightService
     private static string NormalizePath(string path) 
         => path.Replace("\\", "/");
 
+    private static string NormalizeScriptLineEndings(string script)
+    {
+        // PixInsight on Windows behaves more reliably with canonical CRLF line endings.
+        return script.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+    }
+
+    private static string ConvertJsonToJsObjectLiteral(string json)
+    {
+        // Convert JSON object keys to unquoted JavaScript property names.
+        // Example: "plan": [...] -> plan: [...]
+        return Regex.Replace(
+            json,
+            @"(^|[\{\[,]\s*)""([A-Za-z_][A-Za-z0-9_]*)""\s*:",
+            "$1$2:",
+            RegexOptions.Multiline);
+    }
+
     private static string GetPJSRTemplate()
     {
-        // Embedded PJSR template — config is injected as a direct JSON object literal
-        return @"
-// === Flat Master Executor (PixInsight 1.8.9+) ===
-// Generated by FlatMaster C# Application
+        var assembly = Assembly.GetExecutingAssembly();
+        try
+        {
+            var resourceName = assembly.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("PixInsightTemplate.pjsr", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(resourceName))
+            {
+                using var resourceStream = assembly.GetManifestResourceStream(resourceName);
+                if (resourceStream != null)
+                {
+                    using var reader = new StreamReader(resourceStream);
+                    var embedded = reader.ReadToEnd();
+                    if (!string.IsNullOrWhiteSpace(embedded))
+                        return embedded;
+                }
+            }
+        }
+        catch
+        {
+            // Fall through to disk candidates.
+        }
 
-// Sentinel path for completion signaling (set independently of CFG for error catch)
+        var baseDir = AppContext.BaseDirectory;
+        var templateCandidates = new[]
+        {
+            Path.Combine(baseDir, "Services", "PixInsightTemplate.pjsr"),
+            Path.Combine(baseDir, "PixInsightTemplate.pjsr")
+        };
+
+        foreach (var templatePath in templateCandidates)
+        {
+            if (File.Exists(templatePath))
+                return File.ReadAllText(templatePath);
+        }
+
+        return @"
 var __SENTINEL = ""%SENTINEL_PATH%"";
 function touch(p, s){ try{ if(!p) return; var f=new File; f.createForWriting(p); if(s) f.outTextLn(s); f.close(); }catch(e){} }
-
-// Configuration - JSON is valid JavaScript so direct assignment works
-var CFG = %CONFIG_JSON_LITERAL%;
-
-// -------- Helper Functions --------
-function log(s){ Console.writeln(s); }
-function warn(s){ Console.warningln(s); }
-function error(s){ Console.criticalln(s); }
-function joinPath(a,b){ if(!a)return b; var slash=(a.indexOf(""\\"")>=0)?""\\"":""/""; if(a.endsWith(""/"")||a.endsWith(""\\""))return a+b; return a+slash+b; }
-function parentDir(p){ if (!p) return """"; var i = Math.max(p.lastIndexOf(""/""), p.lastIndexOf(""\\"")); return i>0 ? p.substring(0,i) : """"; }
-function ensureDir(p){ if (p && !File.directoryExists(p)) File.createDirectory(p, true); }
-function kexp(x){ return (Math.round(x*1000)/1000).toString(); }
-function baseName(p){ return p.replace(/^.*[\\/]/,''); }
-
-// Enum resolution with fallbacks
-function enumVal(klass, names, defVal){
-  for (var i=0;i<names.length;i++){
-    var n = names[i];
-    try{ if (typeof klass[n] === ""number"") return klass[n]; }catch(e){}
-    try{ if (klass.prototype && typeof klass.prototype[n] === ""number"") return klass.prototype[n]; }catch(e){}
-  }
-  return defVal;
-}
-
-var II_ENUM = {
-  Comb_Average:  enumVal(ImageIntegration, [""Average""], 0),
-  Weight_Dont:   enumVal(ImageIntegration, [""DontCare"",""Weight_DontCare""], 0),
-  Norm_None:     enumVal(ImageIntegration, [""NoNormalization"",""NoScale"",""NoScaling""], 0),
-  Norm_Mult:     enumVal(ImageIntegration, [""Multiplicative""], enumVal(ImageIntegration, [""NoNormalization""], 0)),
-  Rej_None:      enumVal(ImageIntegration, [""NoRejection""], 0),
-  Rej_Winsor:    enumVal(ImageIntegration, [""WinsorizedSigmaClipping"",""WinsorizedSigmaClip""], enumVal(ImageIntegration, [""NoRejection""], 0)),
-  Rej_PC:        enumVal(ImageIntegration, [""PercentileClip"",""Percentile""], enumVal(ImageIntegration, [""NoRejection""], 0)),
-  Rej_LinFit:    enumVal(ImageIntegration, [""LinearFit""], enumVal(ImageIntegration, [""NoRejection""], 0)),
-  RejNorm_None:  enumVal(ImageIntegration, [""NoRejectionNormalization"",""NoNormalization""], 0),
-  RejNorm_Eq:    enumVal(ImageIntegration, [""EqualizeFluxes"",""RejectionNormalization_EqualizeFluxes""], enumVal(ImageIntegration, [""NoRejectionNormalization""], 0))
-};
-
-function assignIIImagesRowsPaths(II, paths){
-  var rows = [];
-  for (var i=0;i<paths.length;i++) rows.push([ true, String(paths[i]), """", """" ]);
-  II.images = rows;
-}
-
-function assignICTargets(IC, paths){
-  var rows = [];
-  for (var i=0;i<paths.length;i++) rows.push([true, String(paths[i])]);
-  IC.targetFrames = rows;
-}
-
-function saveXISF(win, outPath, hints){
-  ensureDir(parentDir(outPath));
-  var tried = [];
-  function tryCall(label, fn){ 
-    try{ 
-      fn(); 
-      log(""  [saveAs "" + label + ""] "" + outPath); 
-      return true; 
-    } catch(e){ 
-      tried.push(label + "": "" + e); 
-      return false; 
-    } 
-  }
-  if (tryCall(""path,format,hints"", function(){ win.saveAs(outPath, ""xisf"", hints); })) return;
-  if (tryCall(""path,format,hints,overwrite"", function(){ win.saveAs(outPath, ""xisf"", hints, false); })) return;
-  if (tryCall(""path,format"", function(){ win.saveAs(outPath, ""xisf""); })) return;
-  if (tryCall(""path,overwrite,format,hints"", function(){ win.saveAs(outPath, false, ""xisf"", hints); })) return;
-  if (tryCall(""path,overwrite"", function(){ win.saveAs(outPath, false); })) return;
-  if (tryCall(""path-only"", function(){ win.saveAs(outPath); })) return;
-  throw new Error(""saveAs failed for "" + outPath + "" ; tried => "" + tried.join("" | ""));
-}
-
-function safeNum(x){ return (x===undefined||x===null||isNaN(x)) ? NaN : Number(x); }
-
-function metaScore(c,want,match){
-  var s=0;
-  var cg=safeNum(c.gain), wg=safeNum(want.gain);
-  var co=safeNum(c.offset), wo=safeNum(want.offset);
-  var ct=safeNum(c.temp), wt=safeNum(want.temp);
-  if(match.enforceBinning && want.binning && c.binning && c.binning===want.binning) s+=3;
-  if(match.preferSameGainOffset){
-    if(!isNaN(cg) && !isNaN(wg) && Math.abs(cg-wg) < 0.01) s+=2;
-    if(!isNaN(co) && !isNaN(wo) && Math.abs(co-wo) < 0.5 ) s+=2;
-  }
-  if(match.preferClosestTemp && !isNaN(ct) && !isNaN(wt)){
-    var dt=Math.abs(ct - wt);
-    if (dt <= match.maxTempDeltaC) s += (1.5 - dt*0.2);
-  }
-  return s;
-}
-
-function groupByExp(cats, typeName){
-  var m = {};
-  for (var i=0;i<cats.length;i++){
-    var c=cats[i]; if (c.type!==typeName) continue;
-    var k=kexp(c.exposure); (m[k]=m[k]||[]).push(c);
-  }
-  return m;
-}
-
-function integrateToMaster(paths,outPath,forDark,hints,rej){
-  if(!paths.length) throw new Error(""No frames for ""+outPath);
-  if(paths.length < 3) throw new Error(""ImageIntegration needs >=3 inputs; got ""+paths.length);
-
-  var II=new ImageIntegration;
-  assignIIImagesRowsPaths(II, paths);
-
-  II.combination = II_ENUM.Comb_Average;
-  II.weightMode  = II_ENUM.Weight_Dont;
-  II.evaluateNoise = false;
-  II.generate64BitResult = true;
-  II.generateRejectionMaps = false;
-  II.generateSlopeMaps = false;
-  II.generateIntegratedImage = true;
-
-  if(forDark){
-    II.normalization = II_ENUM.Norm_None;
-    II.rejection = II_ENUM.Rej_Winsor;
-    II.rejectionNormalization = II_ENUM.RejNorm_None;
-  } else {
-    II.normalization = II_ENUM.Norm_Mult;
-    II.rejectionNormalization = II_ENUM.RejNorm_Eq;
-    
-    var n = paths.length;
-    if (n < 6) {
-      II.rejection = II_ENUM.Rej_PC;
-      II.pcClipLow = 0.20;
-      II.pcClipHigh = 0.10;
-    } else if (n <= 15) {
-      II.rejection = II_ENUM.Rej_Winsor;
-      II.sigmaLow = 4.0;
-      II.sigmaHigh = 3.0;
-      II.winsorizationCutoff = 5.0;
-      II.clipLow = true;
-      II.clipHigh = true;
-    } else {
-      II.rejection = II_ENUM.Rej_LinFit;
-      II.linearFitLow = 5.0;
-      II.linearFitHigh = 4.0;
-      II.clipLow = true;
-      II.clipHigh = true;
-    }
-    II.largeScaleClipHigh = false;
-  }
-
-  if (II.rejection === II_ENUM.Rej_Winsor && rej) {
-    if (typeof rej.lowSigma === ""number"") II.sigmaLow = rej.lowSigma;
-    if (typeof rej.highSigma === ""number"") II.sigmaHigh = rej.highSigma;
-  }
-
-  if(!II.executeGlobal()) throw new Error(""ImageIntegration failed: ""+outPath);
-
-  var id=II.integrationImageId;
-  var win=ImageWindow.windowById(id);
-  if(!win) throw new Error(""Integration window not found"");
-  
-  try {
-    var imgType = (!forDark) ? ""Master Flat"" : ""Master Dark"";
-    var kws = win.keywords || [];
-    kws.push(new FITSKeyword(""IMAGETYP"", imgType, ""Type of image""));
-    win.keywords = kws;
-  } catch (e) { warn(""[metadata] IMAGETYP not set: "" + e); }
-
-  saveXISF(win, outPath, hints);
-  win.forceClose();
-
-  var extraIds = [ II.lowRejectionMapImageId, II.highRejectionMapImageId, II.slopeMapImageId ];
-  for (var i=0;i<extraIds.length;i++){
-    var eid = extraIds[i];
-    if (eid && typeof eid === ""string"" && eid.length){
-      var ew = ImageWindow.windowById(eid);
-      if (ew) try{ ew.forceClose(); }catch(_){}
-    }
-  }
-}
-
-function calibrateFlats(paths,outDir,masterDarkPath,optimize,hints){
-  ensureDir(outDir);
-  var IC=new ImageCalibration;
-  assignICTargets(IC, paths);
-
-  IC.masterBiasEnabled = false;
-  IC.masterFlatEnabled = false;
-  if (masterDarkPath){
-    IC.masterDarkEnabled = true;
-    IC.masterDarkPath = masterDarkPath;
-    IC.optimizeDarks = !!optimize;
-  } else {
-    IC.masterDarkEnabled = false;
-    IC.masterDarkPath = "";
-    IC.optimizeDarks = false;
-  }
-
-  IC.outputDirectory=outDir; 
-  IC.outputExtension="".xisf""; 
-  IC.outputPostfix=""_c""; 
-  IC.outputHints=hints;
-  
-  if(!IC.executeGlobal()) throw new Error(""ImageCalibration failed."");
-}
-
-function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match){
-  var MDF = groupByExp(cats, ""MASTERDARKFLAT"");
-  var MD  = groupByExp(cats, ""MASTERDARK"");
-  var DF  = groupByExp(cats, ""DARKFLAT"");
-  var D   = groupByExp(cats, ""DARK"");
-  var k = kexp(exp);
-
-  // If the C# side precomputed a match for this exposure, prefer that selection
-  try {
-    if (CFG.preselected && CFG.preselected[k]){
-      var p = CFG.preselected[k];
-      return { path: p.path, optimize: !!p.optimize, kind: p.kind || ""preselected"" };
-    }
-  } catch (e) { /* ignore and continue to JS matching fallback */ }
-
-  if (MDF[k] && MDF[k].length){
-    var best=MDF[k][0], bestS=-1;
-    for (var i=0;i<MDF[k].length;i++){ var s=metaScore(MDF[k][i],want,match); if (s>bestS){bestS=s; best=MDF[k][i];}}
-    return {path:best.path, optimize:false, kind:""MasterDarkFlat(exact)""};
-  }
-  if (DF[k] && DF[k].length >= 3){
-    var out=joinPath(cacheDir,""MasterDarkFlat_""+k+""s.xisf"");
-    integrateToMaster(DF[k].map(function(x){return x.path;}),out,true,hintsCal,rej);
-    return {path:out, optimize:false, kind:""MasterDarkFlat(built)""};
-  }
-  if (MD[k] && MD[k].length){
-    var best2=MD[k][0], s2=-1;
-    for (var j=0;j<MD[k].length;j++){ var sc=metaScore(MD[k][j],want,match); if (sc>s2){s2=sc; best2=MD[k][j];}}
-    return {path:best2.path, optimize:false, kind:""MasterDark(exact)""};
-  }
-  if (D[k] && D[k].length >= 3){
-    var out2=joinPath(cacheDir,""MasterDark_""+k+""s.xisf"");
-    integrateToMaster(D[k].map(function(x){return x.path;}),out2,true,hintsCal,rej);
-    return {path:out2, optimize:false, kind:""MasterDark(built)""};
-  }
-  if (CFG.allowNearestExposureWithOptimize){
-    var allMD=[], kk;
-    for (kk in MD){ for (var a=0;a<MD[kk].length;a++) allMD.push(MD[kk][a]); }
-    if (allMD.length){
-      allMD.sort(function(a,b){ return Math.abs(a.exposure-exp)-Math.abs(b.exposure-exp); });
-      var best3=allMD[0];
-      var delta = Math.abs(best3.exposure - exp);
-      if (delta <= 2.0) {
-        return {path:best3.path, optimize:false, kind:""MasterDark(nearest)""};
-      }
-      return {path:best3.path, optimize:true, kind:""MasterDark(nearest+optimize)""};
-    }
-  }
-  return null;
-}
-
-function guessFilterFrom(files, dir){
-  var rx = /(?:^|[_\-])(?:FILTER|Filter)[_\-]?([A-Za-z0-9]+)/;
-  for (var i=0;i<files.length;i++){
-    var m = baseName(files[i]).match(rx);
-    if (m && m[1]) return String(m[1]).toUpperCase();
-  }
-  var parts = dir.replace(/\\/g,""/"").split(""/"");
-  var last = parts.length ? parts[parts.length-1] : """";
-  if (last && !/^\d{4}-\d{2}-\d{2}$/.test(last)) return last.toUpperCase();
-  return ""UNKNOWN"";
-}
-
-function guessDateFromPath(dir, files){
-  var rx = /\b(20\d{2}-\d{2}-\d{2})\b/;
-  var m = dir.match(rx);
-  if (m) return m[1];
-  for (var i=0;i<files.length;i++){
-    var mm = files[i].match(rx);
-    if (mm) return mm[1];
-  }
-  return ""UNKNOWNDATE"";
-}
-
-// -------- Main Processing --------
-function run(){
-  Console.show();
-  var plan = CFG.plan || [];
-  var cats = CFG.darkCatalog || [];
-  var rej = CFG.rejection || {lowSigma:5.0, highSigma:5.0};
-  var hintsCal = CFG.xisfHintsCal||"""";
-  var hintsMaster= CFG.xisfHintsMaster||"""";
-  var match = CFG.match || {};
-
-  for (var j=0;j<plan.length;j++){
-    var job=plan[j], dir=job.dirPath; 
-    log(""\n=== FLAT dir: ""+dir+"" ==="");
-    
-    var rel = job.relDir || """"; 
-    if (rel === ""."") rel = """";
-    var outRoot = job.outRoot || dir;
-    var outBase = rel ? joinPath(outRoot, rel) : outRoot;
-    ensureDir(outBase);
-    
-    for (var g=0; g<job.groups.length; g++){
-      var grp=job.groups[g], exp=grp.exposure, files=grp.files, want=grp.want || {};
-      if (want.binning === undefined) want.binning = null;
-      if (want.gain === undefined) want.gain = null;
-      if (want.offset === undefined) want.offset = null;
-      if (want.temp === undefined) want.temp = null;
-
-      log(""  Exposure ""+kexp(exp)+"" s : ""+files.length+"" flats"");
-
-      // Pre-compute master flat path so we can skip if already done
-      var dateStr = guessDateFromPath(dir, files);
-      var filt = guessFilterFrom(files, dir);
-      var masterName = ""MasterFlat_"" + dateStr + ""_"" + filt + ""_"" + kexp(exp) + ""s.xisf"";
-      var masterOut = joinPath(outBase, masterName);
-
-      if (File.exists(masterOut)){
-        log(""  SKIP (master already exists): "" + masterOut);
-        continue;
-      }
-      
-      var cacheDir = joinPath(dir, CFG.cacheDirName||""_DarkMasters"");
-      var sel = pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match);
-      if(!sel){
-        warn(""  No suitable dark @ "" + kexp(exp) + "" s in "" + dir + "" - skipping this exposure group."");
-        continue;
-      }
-      log(""  Using [""+sel.kind+""] optimize=""+sel.optimize);
-
-      var calOut = joinPath(outBase, (CFG.calibratedSubdirBase||""_CalibratedFlats"")+""_""+kexp(exp)+""s"");
-      calibrateFlats(files, calOut, sel.path, sel.optimize, hintsCal);
-
-      var calFiles=[], ff=new FileFind;
-      if(ff.begin(joinPath(calOut,""*.xisf""))){ 
-        do{ 
-          if(ff.isFile) calFiles.push(joinPath(calOut,ff.name)); 
-        } while(ff.next()); 
-      }
-      ff.end();
-      if(!calFiles.length) throw new Error(""No calibrated flats in ""+calOut);
-      
-      integrateToMaster(calFiles, masterOut, false, hintsMaster, rej);
-      log(""  Saved: ""+masterOut);
-
-      if (CFG.deleteCalibrated){
-        try{
-          var delFF=new FileFind;
-          if (delFF.begin(joinPath(calOut,""*""))){
-            do{
-              var p = joinPath(calOut, delFF.name);
-              try { if (delFF.isFile) File.remove(p); } catch(e){}
-            } while (delFF.next());
-          }
-          delFF.end();
-          try { File.removeDirectory(calOut, true); } catch(e){}
-          log(""  [cleanup] removed ""+calOut);
-        } catch(e){
-          warn(""  [cleanup] failed ""+calOut+"" : ""+e);
-        }
-      }
-    }
-  }
-  
-  log(""\nAll processing complete."");
-  touch(__SENTINEL, ""OK"");
-}
-
-try{ 
-  if (typeof CFG === ""undefined"") throw new Error(""CFG not loaded - config file may have a syntax error"");
-  run(); 
-} catch(e){ 
-  error(""ERROR: ""+e); 
-  touch(__SENTINEL, ""ERROR: ""+e); 
-}
+touch(__SENTINEL, ""ERROR: PixInsightTemplate.pjsr not found"");
 ";
     }
 }
-

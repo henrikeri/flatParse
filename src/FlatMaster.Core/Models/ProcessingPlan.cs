@@ -58,7 +58,7 @@ public sealed record ProcessingConfiguration
     /// <summary>
     /// If true, allow processing without flats. If missing, process and tag in log.
     /// </summary>
-    public bool AllowProcessingWithoutFlats { get; init; } = false;
+    // Deprecated: processing without flats is controlled by matching priority (hard-coded)
 }
 
 /// <summary>

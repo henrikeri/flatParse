@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System.Globalization;
+using System.Text.RegularExpressions;
 using FlatMaster.Core.Interfaces;
 using FlatMaster.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -37,6 +38,11 @@ public sealed class FileScannerService : IFileScannerService
     {
         ".fits", ".fit", ".xisf"
     };
+
+    // Match FlatMaster-generated outputs: MasterFlat_<date>_<filter>_<exp>s.(xisf|fit|fits)
+    private static readonly Regex GeneratedMasterFlatRegex = new(
+        @"^MasterFlat_.+_[0-9]+(?:\.[0-9]+)?s\.(?:xisf|fit|fits)$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public FileScannerService(IMetadataReaderService metadataReader, ILogger<FileScannerService> logger)
     {
@@ -81,11 +87,11 @@ public sealed class FileScannerService : IFileScannerService
                 // Filter out existing master flats
                 var beforeFilter = imageFiles.Count;
                 imageFiles = imageFiles
-                    .Where(f => !IsMasterFlat(Path.GetFileName(f)))
+                    .Where(f => !IsGeneratedMasterFlat(Path.GetFileName(f)))
                     .ToList();
 
                 if (beforeFilter != imageFiles.Count)
-                    _logger.LogInformation("{Directory}: Filtered out {Count} master flats", directory, beforeFilter - imageFiles.Count);
+                    _logger.LogInformation("{Directory}: Filtered out {Count} generated master flats", directory, beforeFilter - imageFiles.Count);
 
                 if (imageFiles.Count == 0)
                     continue;
@@ -212,14 +218,15 @@ public sealed class FileScannerService : IFileScannerService
                         darkTypesFound[meta.Type] = 0;
                     darkTypesFound[meta.Type]++;
                     
-                    if (!IsDarkType(meta.Type) || !meta.ExposureTime.HasValue)
+                    var allowMissingExposure = meta.Type is ImageType.Bias or ImageType.MasterBias;
+                    if (!IsDarkType(meta.Type) || (!meta.ExposureTime.HasValue && !allowMissingExposure))
                         continue;
 
                     darkFrames.Add(new DarkFrame
                     {
                         FilePath = path,
                         Type = meta.Type,
-                        ExposureTime = meta.ExposureTime.Value,
+                        ExposureTime = meta.ExposureTime ?? 0.0,
                         Binning = meta.Binning,
                         Gain = meta.Gain,
                         Offset = meta.Offset,
@@ -227,7 +234,9 @@ public sealed class FileScannerService : IFileScannerService
                     });
                 }
                 
-                var addedFromDir = metadata.Count(kvp => IsDarkType(kvp.Value.Type) && kvp.Value.ExposureTime.HasValue);
+                var addedFromDir = metadata.Count(kvp =>
+                    IsDarkType(kvp.Value.Type) &&
+                    (kvp.Value.ExposureTime.HasValue || kvp.Value.Type is ImageType.Bias or ImageType.MasterBias));
                 _logger.LogDebug("{Directory}: Added {Count} darks. Image types found: {Types}", 
                     directory, addedFromDir, string.Join(", ", darkTypesFound.Select(kvp => $"{kvp.Key}={kvp.Value}")));
             }
@@ -317,6 +326,8 @@ public sealed class FileScannerService : IFileScannerService
         {
             if (!metadata.TryGetValue(path, out var meta) || !meta.ExposureTime.HasValue)
                 continue;
+            if (IsDarkType(meta.Type))
+                continue;
 
             var key = meta.ExposureKey;
             if (!groups.ContainsKey(key))
@@ -352,14 +363,15 @@ public sealed class FileScannerService : IFileScannerService
     private static bool ShouldSkipDirectory(string dirName) 
         => dirName.StartsWith('.') || SkipDirectories.Contains(dirName);
 
-    private static bool IsMasterFlat(string fileName) 
-        => fileName.StartsWith("MasterFlat_", StringComparison.OrdinalIgnoreCase);
+    private static bool IsGeneratedMasterFlat(string fileName)
+        => GeneratedMasterFlatRegex.IsMatch(fileName);
 
     private static bool HasExtension(string filePath, string extension)
         => string.Equals(Path.GetExtension(filePath), extension, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsDarkType(ImageType type) 
-        => type is ImageType.Dark or ImageType.DarkFlat or ImageType.MasterDark or ImageType.MasterDarkFlat;
+        => type is ImageType.Dark or ImageType.DarkFlat or ImageType.MasterDark or ImageType.MasterDarkFlat
+            or ImageType.Bias or ImageType.MasterBias;
 
     /// <summary>
     /// Master darks from WBPP/ImageIntegration often lack CCD-TEMP headers.
