@@ -88,11 +88,13 @@ public sealed class DarkMatchingService : IDarkMatchingService
                     .ThenByDescending(d => d.CalculateMatchScore(criteria, options))
                     .First();
 
+                var delta = Math.Abs(nearest.ExposureTime - exposure);
+                var optimize = delta > 2.0; // accept nearby masters within 2s without optimization
                 return new DarkMatchResult
                 {
                     FilePath = nearest.FilePath,
-                    OptimizeRequired = true,
-                    MatchKind = string.Format(CultureInfo.InvariantCulture, "MasterDark(nearest+optimize, {0:F3}s)", nearest.ExposureTime),
+                    OptimizeRequired = optimize,
+                    MatchKind = string.Format(CultureInfo.InvariantCulture, optimize ? "MasterDark(nearest+optimize, {0:F3}s)" : "MasterDark(nearest, {0:F3}s)", nearest.ExposureTime),
                     MatchScore = nearest.CalculateMatchScore(criteria, options)
                 };
             }

@@ -17,6 +17,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Globalization;
 using FlatMaster.Core.Interfaces;
 using FlatMaster.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -29,15 +30,42 @@ namespace FlatMaster.Infrastructure.Services;
 public sealed class PixInsightService : IPixInsightService
 {
     private readonly ILogger<PixInsightService> _logger;
+  private readonly IDarkMatchingService _darkMatchingService;
 
-    public PixInsightService(ILogger<PixInsightService> logger)
+    public PixInsightService(ILogger<PixInsightService> logger, IDarkMatchingService darkMatchingService)
     {
-        _logger = logger;
+      _logger = logger;
+      _darkMatchingService = darkMatchingService;
     }
 
     public string GeneratePJSRScript(ProcessingPlan plan)
     {
         var sentinelPath = NormalizePath(Path.Combine(Path.GetTempPath(), "flatmaster_sentinel.txt"));
+
+        // Precompute best darks per exposure using the C# dark-matcher so the PixInsight script
+        // can rely on preselected choices instead of repeating matching in JS.
+        var preselected = new Dictionary<string, object?>();
+        var darkCatalog = plan.SelectedDarks.ToList();
+        var matchOptions = plan.Configuration.DarkMatching;
+
+        foreach (var job in plan.SelectedJobs)
+        {
+          foreach (var g in job.ExposureGroups)
+          {
+            var k = (Math.Round(g.ExposureTime * 1000) / 1000.0).ToString(CultureInfo.InvariantCulture);
+            if (preselected.ContainsKey(k)) continue;
+            var best = _darkMatchingService.FindBestDark(g, darkCatalog, matchOptions);
+            if (best != null)
+            {
+              preselected[k] = new
+              {
+                path = NormalizePath(best.FilePath),
+                optimize = best.OptimizeRequired,
+                kind = best.MatchKind
+              };
+            }
+          }
+        }
 
         var config = new
         {
@@ -88,6 +116,7 @@ public sealed class PixInsightService : IPixInsightService
                 highSigma = plan.Configuration.Rejection.HighSigma
             },
             sentinelPath,
+          preselected = preselected,
             deleteCalibrated = plan.Configuration.DeleteCalibratedFlats
         };
 
@@ -637,11 +666,15 @@ function calibrateFlats(paths,outDir,masterDarkPath,optimize,hints){
 
   IC.masterBiasEnabled = false;
   IC.masterFlatEnabled = false;
-  IC.masterDarkEnabled = true;
-  IC.masterBiasPath = """";
-  IC.masterFlatPath = """";
-  IC.masterDarkPath = masterDarkPath;
-  IC.optimizeDarks = !!optimize;
+  if (masterDarkPath){
+    IC.masterDarkEnabled = true;
+    IC.masterDarkPath = masterDarkPath;
+    IC.optimizeDarks = !!optimize;
+  } else {
+    IC.masterDarkEnabled = false;
+    IC.masterDarkPath = "";
+    IC.optimizeDarks = false;
+  }
 
   IC.outputDirectory=outDir; 
   IC.outputExtension="".xisf""; 
@@ -657,6 +690,14 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match){
   var DF  = groupByExp(cats, ""DARKFLAT"");
   var D   = groupByExp(cats, ""DARK"");
   var k = kexp(exp);
+
+  // If the C# side precomputed a match for this exposure, prefer that selection
+  try {
+    if (CFG.preselected && CFG.preselected[k]){
+      var p = CFG.preselected[k];
+      return { path: p.path, optimize: !!p.optimize, kind: p.kind || ""preselected"" };
+    }
+  } catch (e) { /* ignore and continue to JS matching fallback */ }
 
   if (MDF[k] && MDF[k].length){
     var best=MDF[k][0], bestS=-1;
@@ -684,6 +725,10 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match){
     if (allMD.length){
       allMD.sort(function(a,b){ return Math.abs(a.exposure-exp)-Math.abs(b.exposure-exp); });
       var best3=allMD[0];
+      var delta = Math.abs(best3.exposure - exp);
+      if (delta <= 2.0) {
+        return {path:best3.path, optimize:false, kind:""MasterDark(nearest)""};
+      }
       return {path:best3.path, optimize:true, kind:""MasterDark(nearest+optimize)""};
     }
   }
@@ -755,7 +800,10 @@ function run(){
       
       var cacheDir = joinPath(dir, CFG.cacheDirName||""_DarkMasters"");
       var sel = pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match);
-      if(!sel) throw new Error(""No suitable dark @ ""+kexp(exp)+"" s in ""+dir);
+      if(!sel){
+        warn(""  No suitable dark @ "" + kexp(exp) + "" s in "" + dir + "" - skipping this exposure group."");
+        continue;
+      }
       log(""  Using [""+sel.kind+""] optimize=""+sel.optimize);
 
       var calOut = joinPath(outBase, (CFG.calibratedSubdirBase||""_CalibratedFlats"")+""_""+kexp(exp)+""s"");
