@@ -17,6 +17,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -41,6 +42,7 @@ public partial class MainViewModel : ObservableObject
     // Deprecated: processing without flats controlled by matching priority; UI option removed
     private readonly IFileScannerService _fileScanner;
     private readonly IDarkMatchingService _darkMatcher;
+    private readonly IPixInsightMasterDarkService _pixInsightMasterDarkService;
     private readonly IPixInsightService _pixInsight;
     private readonly IImageProcessingEngine _nativeEngine;
     private readonly IMetadataReaderService _metadataReader;
@@ -90,7 +92,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _copyOnlyProcessed = true;
 
-    // ── Batch progress tracking ──
+    // â”€â”€ Batch progress tracking â”€â”€
     [ObservableProperty]
     private double _batchProgressValue; // 0.0 to 1.0
 
@@ -111,6 +113,8 @@ public partial class MainViewModel : ObservableObject
         new(@"Folders (\d+)-(\d+) of (\d+)\s+\((\d+)/(\d+) files\)", RegexOptions.Compiled);
     private static readonly Regex FolderDoneRegex =
         new(@"Folders \d+-\d+ (done|FAILED)\s+\((\d+)/(\d+) files\)", RegexOptions.Compiled);
+    private static readonly Regex DarksExposureFolderRegex =
+        new(@"^DARKS[\s_-]?\d+(?:\.\d+)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public ObservableCollection<string> FlatBaseRoots { get; } = new();
     public ObservableCollection<string> DarkLibraryRoots { get; } = new();
@@ -123,6 +127,7 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel(
         IFileScannerService fileScanner,
         IDarkMatchingService darkMatcher,
+        IPixInsightMasterDarkService pixInsightMasterDarkService,
         IPixInsightService pixInsight,
         IImageProcessingEngine nativeEngine,
         IMetadataReaderService metadataReader,
@@ -133,6 +138,7 @@ public partial class MainViewModel : ObservableObject
     {
         _fileScanner = fileScanner;
         _darkMatcher = darkMatcher;
+        _pixInsightMasterDarkService = pixInsightMasterDarkService;
         _pixInsight = pixInsight;
         _nativeEngine = nativeEngine;
         _metadataReader = metadataReader;
@@ -149,7 +155,7 @@ public partial class MainViewModel : ObservableObject
         var outputMode = _configuration["OutputConfiguration:Mode"] ?? "InlineInSource";
         _useReplicatedOutput = outputMode.Equals("ReplicatedSeparateTree", StringComparison.OrdinalIgnoreCase);
         
-        Log($"FlatMaster v1.2 - Initialized at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        Log($"FlatMaster v1.0.3 - Initialized at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         Log($"Session log: {GetSessionLogPath()}");
     }
 
@@ -619,32 +625,203 @@ public partial class MainViewModel : ObservableObject
                 Configuration = config
             };
 
-            // Apply user-configured output root to jobs if replicated output is enabled
-            if (UseReplicatedOutput && !string.IsNullOrWhiteSpace(OutputRootPath))
+            // Safety policy: never write output artifacts into source input directories.
+            // Always remap job outputs to explicit output root (fallback to temp if empty).
+            var effectiveOutputRoot = OutputRootPath;
+            if (string.IsNullOrWhiteSpace(effectiveOutputRoot))
             {
-                var remappedJobs = new List<DirectoryJob>();
-                foreach (var job in selectedJobs)
-                {
-                    remappedJobs.Add(new DirectoryJob
-                    {
-                        DirectoryPath = job.DirectoryPath,
-                        BaseRootPath = job.BaseRootPath,
-                        OutputRootPath = OutputRootPath,
-                        RelativeDirectory = job.RelativeDirectory,
-                        ExposureGroups = job.ExposureGroups,
-                        IsSelected = job.IsSelected
-                    });
-                }
-                plan = new ProcessingPlan
-                {
-                    Jobs = remappedJobs,
-                    DarkCatalog = selectedDarks,
-                    Configuration = config
-                };
-                Log($"Output mapped to: {OutputRootPath}");
+                effectiveOutputRoot = Path.Combine(Path.GetTempPath(), "FlatMasterOutput");
+                OutputRootPath = effectiveOutputRoot;
+                Log($"Output root was empty. Using fallback output root: {effectiveOutputRoot}");
             }
 
+            if (!UseReplicatedOutput)
+                Log("Inline source output is disabled. Writing all outputs to output root.");
+
+            var remappedJobs = new List<DirectoryJob>();
+            foreach (var job in selectedJobs)
+            {
+                remappedJobs.Add(new DirectoryJob
+                {
+                    DirectoryPath = job.DirectoryPath,
+                    BaseRootPath = job.BaseRootPath,
+                    OutputRootPath = effectiveOutputRoot,
+                    RelativeDirectory = job.RelativeDirectory,
+                    ExposureGroups = job.ExposureGroups,
+                    IsSelected = job.IsSelected
+                });
+            }
+            plan = new ProcessingPlan
+            {
+                Jobs = remappedJobs,
+                DarkCatalog = selectedDarks,
+                Configuration = config
+            };
+            Log($"Output mapped to: {effectiveOutputRoot}");
+
             var logProgress = new Progress<string>(msg => { Log(msg); ParseBatchProgress(msg); });
+
+            if (selectedDarks.Count > 0)
+            {
+                var masterDarkOptions = _configuration.GetSection("PixInsightMasterDark").Get<PixInsightMasterDarkOptions>()
+                    ?? _configuration.GetSection("NinaMasterDark").Get<PixInsightMasterDarkOptions>()
+                    ?? new PixInsightMasterDarkOptions();
+
+                var analysis = await _pixInsightMasterDarkService.PrepareMissingMasterDarksAsync(
+                    plan.SelectedJobs,
+                    selectedDarks,
+                    config.DarkMatching,
+                    effectiveOutputRoot,
+                    masterDarkOptions,
+                    executeBuilds: false,
+                    logProgress,
+                    cancellationToken);
+
+                Log($"[MasterDark] Preflight analysis: missingGroups={analysis.MissingMasterDarkGroups}, buildable={analysis.BuildableMasterDarkCount}, issues={analysis.Issues.Count}");
+
+                if (analysis.MissingMasterDarkGroups > 0)
+                {
+                    Log($"[MasterDark] Missing matching master darks for {analysis.MissingMasterDarkGroups} flat group(s).");
+                }
+
+                if (analysis.BuildableMasterDarkCount > 0)
+                {
+                    var previewText = BuildMasterDarkPlanPreview(analysis.BuildRequests, maxRequests: 8);
+                    var totalRawFrames = analysis.BuildRequests.Sum(r => r.RawDarkPaths.Count);
+                    var modeLabel = UseNativeProcessing
+                        ? "Native"
+                        : "PixInsight (same engine as flat processing)";
+
+                    var confirmMessage =
+                        "Missing matching master darks were detected.\n\n" +
+                        $"FlatMaster will create {analysis.BuildableMasterDarkCount} master dark file(s) before flat processing.\n" +
+                        $"Build mode: {modeLabel}\n" +
+                        $"Total raw dark frames to combine: {totalRawFrames}\n" +
+                        $"Output folder:\n{analysis.OutputDirectory}\n\n" +
+                        "Planned builds:\n" + previewText + "\n\n" +
+                        "Continue processing?";
+
+                    var confirm = WpfMessageBox.Show(
+                        confirmMessage,
+                        "Master Dark Pre-Processing",
+                        WpfMessageBoxButton.YesNo,
+                        WpfMessageBoxImage.Information);
+
+                    if (confirm != System.Windows.MessageBoxResult.Yes)
+                    {
+                        Log("Processing cancelled by user at master dark pre-processing prompt.");
+                        StatusMessage = "Processing cancelled";
+                        return;
+                    }
+
+                    MasterDarkPreparationResult prep;
+                    if (UseNativeProcessing)
+                    {
+                        var nativeOnlyOptions = masterDarkOptions with
+                        {
+                            PreferPixInsightCli = false,
+                            AllowInternalFallback = true
+                        };
+
+                        prep = await _pixInsightMasterDarkService.PrepareMissingMasterDarksAsync(
+                            plan.SelectedJobs,
+                            selectedDarks,
+                            config.DarkMatching,
+                            effectiveOutputRoot,
+                            nativeOnlyOptions,
+                            executeBuilds: true,
+                            logProgress,
+                            cancellationToken);
+
+                        Log("[MasterDark] Native mode selected: generating missing masters with native integration.");
+                    }
+                    else
+                    {
+                        prep = await _pixInsight.BuildMasterDarksAsync(
+                            analysis.BuildRequests,
+                            analysis.OutputDirectory,
+                            PixInsightPath,
+                            config.XisfHintsMaster,
+                            config.Rejection.LowSigma,
+                            config.Rejection.HighSigma,
+                            logProgress,
+                            cancellationToken);
+
+                        Log("[MasterDark] PixInsight mode selected: generating missing masters with PixInsight.");
+                    }
+
+                    foreach (var msg in prep.Messages)
+                        Log(msg);
+
+                    if (prep.RanPixInsightCli)
+                        Log("[MasterDark] PixInsight CLI was invoked for master dark generation.");
+                    if (prep.UsedInternalFallback)
+                        Log("[MasterDark] Internal fallback was used for one or more master dark builds.");
+
+                    foreach (var generated in prep.CreatedMasterDarks)
+                    {
+                        if (selectedDarks.Any(d => string.Equals(d.FilePath, generated.FilePath, StringComparison.OrdinalIgnoreCase)))
+                            continue;
+                        selectedDarks.Add(generated);
+                    }
+
+                    if (prep.CreatedMasterDarkCount > 0)
+                    {
+                        Log($"[MasterDark] Added {prep.CreatedMasterDarkCount} generated/reused master dark(s) to catalog.");
+                    }
+
+                    if (prep.Issues.Count > 0)
+                    {
+                        foreach (var issue in prep.Issues)
+                        {
+                            Log($"[MasterDark] Unresolved {issue.ExposureTime.ToString("0.###", CultureInfo.InvariantCulture)}s: {issue.Reason}");
+                        }
+
+                        if (RequireDarks)
+                        {
+                            var summary = string.Join(
+                                Environment.NewLine,
+                                prep.Issues.Take(12).Select(i =>
+                                    $"- {i.ExposureTime.ToString("0.###", CultureInfo.InvariantCulture)}s: {i.Reason}"));
+
+                            throw new InvalidOperationException(
+                                "Required dark calibration cannot proceed because one or more missing master darks " +
+                                "could not be generated.\n" + summary);
+                        }
+
+                        Log("[MasterDark] Continuing in best-effort mode because 'Require darks' is disabled.");
+                    }
+
+                    plan = new ProcessingPlan
+                    {
+                        Jobs = remappedJobs,
+                        DarkCatalog = selectedDarks,
+                        Configuration = config
+                    };
+                }
+                else if (analysis.Issues.Count > 0)
+                {
+                    foreach (var issue in analysis.Issues)
+                    {
+                        Log($"[MasterDark] Unresolved {issue.ExposureTime.ToString("0.###", CultureInfo.InvariantCulture)}s: {issue.Reason}");
+                    }
+
+                    if (RequireDarks)
+                    {
+                        var summary = string.Join(
+                            Environment.NewLine,
+                            analysis.Issues.Take(12).Select(i =>
+                                $"- {i.ExposureTime.ToString("0.###", CultureInfo.InvariantCulture)}s: {i.Reason}"));
+
+                        throw new InvalidOperationException(
+                            "Required dark calibration cannot proceed because matching master darks are missing " +
+                            "and no eligible raw dark groups were available to build them.\n" + summary);
+                    }
+
+                    Log("[MasterDark] No buildable master dark groups were found. Continuing in best-effort mode because 'Require darks' is disabled.");
+                }
+            }
+
             ProcessingResult result;
 
             if (UseNativeProcessing)
@@ -669,8 +846,8 @@ public partial class MainViewModel : ObservableObject
             // Generate processing report
             var outputConfig = new OutputPathConfiguration
             {
-                Mode = UseReplicatedOutput ? OutputMode.ReplicatedSeparateTree : OutputMode.InlineInSource,
-                OutputRootPath = UseReplicatedOutput ? OutputRootPath : (selectedJobs.FirstOrDefault()?.DirectoryPath ?? ""),
+                Mode = OutputMode.ReplicatedSeparateTree,
+                OutputRootPath = effectiveOutputRoot,
                 ReplicateDirectoryStructure = true,
                 CopyOnlyProcessedFiles = CopyOnlyProcessed,
                 DeleteCalibratedFlatsAfterMaster = DeleteCalibrated
@@ -778,6 +955,145 @@ public partial class MainViewModel : ObservableObject
         if (ts.TotalMinutes >= 1)
             return $"~{(int)ts.TotalMinutes}m remaining";
         return "< 1 min remaining";
+    }
+
+    private static string BuildMasterDarkPlanPreview(IReadOnlyList<MasterDarkBuildRequest> requests, int maxRequests)
+    {
+        if (requests.Count == 0)
+            return "(none)";
+
+        var sb = new StringBuilder();
+        var limit = Math.Max(1, maxRequests);
+        var shown = Math.Min(limit, requests.Count);
+
+        for (int i = 0; i < shown; i++)
+        {
+            var request = requests[i];
+            var binning = string.IsNullOrWhiteSpace(request.Binning) ? "n/a" : request.Binning;
+            var treeRoot = GetMasterDarkSourceTreeRoot(request.RawDarkPaths);
+            sb.AppendLine($"{i + 1}. {request.TargetMasterType} {request.ExposureTime.ToString("0.###", CultureInfo.InvariantCulture)}s, bin {binning}");
+            sb.AppendLine($"   Combine: {request.RawDarkPaths.Count} raw dark file(s)");
+            sb.AppendLine($"   Source tree: {treeRoot}");
+        }
+
+        if (requests.Count > shown)
+            sb.Append($"... plus {requests.Count - shown} more build(s).");
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string GetMasterDarkSourceTreeRoot(IReadOnlyList<string> rawDarkPaths)
+    {
+        if (rawDarkPaths.Count == 0)
+            return "(unknown)";
+
+        var exposureRoots = rawDarkPaths
+            .Select(TryGetExposureTreeRoot)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (exposureRoots.Count == 1)
+            return exposureRoots[0];
+
+        if (exposureRoots.Count > 1)
+        {
+            var commonExposureRoot = GetCommonPathPrefix(exposureRoots);
+            if (!string.IsNullOrWhiteSpace(commonExposureRoot))
+                return commonExposureRoot;
+
+            var sample = string.Join(" | ", exposureRoots.Take(3));
+            if (exposureRoots.Count > 3)
+                sample += $" | ... ({exposureRoots.Count} trees)";
+            return sample;
+        }
+
+        var directories = rawDarkPaths
+            .Select(Path.GetDirectoryName)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (directories.Count == 0)
+            return "(unknown)";
+
+        var commonDirectory = GetCommonPathPrefix(directories);
+        return string.IsNullOrWhiteSpace(commonDirectory) ? directories[0] : commonDirectory;
+    }
+
+    private static string? TryGetExposureTreeRoot(string rawDarkPath)
+    {
+        var directory = Path.GetDirectoryName(rawDarkPath);
+        if (string.IsNullOrWhiteSpace(directory))
+            return null;
+
+        var normalized = directory.Replace('/', '\\').TrimEnd('\\');
+        var isUnc = normalized.StartsWith("\\\\", StringComparison.Ordinal);
+        var parts = normalized.Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+            return null;
+
+        for (int i = 0; i < parts.Length; i++)
+        {
+            if (!DarksExposureFolderRegex.IsMatch(parts[i]))
+                continue;
+
+            var prefix = string.Join('\\', parts.Take(i + 1));
+            if (isUnc)
+                return "\\\\" + prefix;
+            if (parts[0].EndsWith(":", StringComparison.Ordinal) && i == 0)
+                return parts[0] + "\\";
+            return prefix;
+        }
+
+        return null;
+    }
+
+    private static string GetCommonPathPrefix(IReadOnlyList<string> paths)
+    {
+        if (paths.Count == 0)
+            return string.Empty;
+
+        var normalized = paths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p.Replace('/', '\\').TrimEnd('\\'))
+            .ToList();
+        if (normalized.Count == 0)
+            return string.Empty;
+
+        var isUnc = normalized.All(p => p.StartsWith("\\\\", StringComparison.Ordinal));
+        var splitPaths = normalized
+            .Select(p => p.Split('\\', StringSplitOptions.RemoveEmptyEntries))
+            .Where(parts => parts.Length > 0)
+            .ToList();
+
+        if (splitPaths.Count == 0)
+            return string.Empty;
+
+        var minLength = splitPaths.Min(parts => parts.Length);
+        int commonLength = 0;
+
+        for (int i = 0; i < minLength; i++)
+        {
+            var token = splitPaths[0][i];
+            if (!splitPaths.All(parts => string.Equals(parts[i], token, StringComparison.OrdinalIgnoreCase)))
+                break;
+            commonLength++;
+        }
+
+        if (commonLength == 0)
+            return string.Empty;
+
+        var prefix = string.Join('\\', splitPaths[0].Take(commonLength));
+
+        if (isUnc)
+            return "\\\\" + prefix;
+        if (commonLength == 1 && splitPaths[0][0].EndsWith(":", StringComparison.Ordinal))
+            return prefix + "\\";
+
+        return prefix;
     }
 
     private List<DarkFrame> GetSelectedDarks()
