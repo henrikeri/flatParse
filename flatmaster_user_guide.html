@@ -1,249 +1,559 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FlatMaster User Guide</title>
+  <title>FlatMaster User Manual</title>
   <style>
     :root {
-      --bg: #0b1220;
-      --panel: #111827;
-      --panel-2: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --accent: #38bdf8;
-      --line: #334155;
-      --ok: #34d399;
-      --warn: #f59e0b;
-      --bad: #f87171;
+      --bg: #f3f6fa;
+      --surface: #ffffff;
+      --surface-alt: #f8fbff;
+      --text: #1e293b;
+      --muted: #5b6b7f;
+      --line: #d7e0ea;
+      --accent: #0b74d1;
+      --accent-2: #0aa06e;
+      --warn: #ad5a00;
+      --danger: #a83232;
+      --shadow: 0 12px 28px rgba(15, 36, 64, 0.08);
+      --radius: 14px;
     }
+
     * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: Segoe UI, Arial, sans-serif; }
-    .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 44px; }
-    .hero { border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: linear-gradient(180deg,#0b1220 0%, #0f172a 100%); }
-    h1 { margin: 0; font-size: 32px; }
-    h2 { margin-top: 30px; font-size: 23px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
-    h3 { margin-top: 20px; font-size: 18px; }
-    .meta { color: var(--muted); margin-top: 8px; font-size: 14px; }
-    .toc { margin-top: 14px; display: grid; gap: 6px; }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 12px; }
-    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(280px,1fr)); gap: 12px; }
-    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(220px,1fr)); gap: 12px; }
-    pre { background: #020617; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
-    code { background: #1e293b; border-radius: 4px; padding: 1px 5px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
-    th { background: var(--panel-2); }
-    ul, ol { margin-top: 8px; margin-bottom: 8px; }
-    .ok { color: var(--ok); }
-    .warn { color: var(--warn); }
-    .bad { color: var(--bad); }
-    @media (max-width: 920px) {
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: radial-gradient(circle at top right, #e7f0fb 0%, var(--bg) 42%, var(--bg) 100%);
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      line-height: 1.45;
+    }
+
+    .wrap {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 26px 20px 50px;
+    }
+
+    .hero {
+      background: linear-gradient(140deg, #0f355d 0%, #125e8f 50%, #16719e 100%);
+      color: #f4f9ff;
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 32px;
+      letter-spacing: 0.3px;
+    }
+
+    .hero p {
+      margin: 8px 0 0;
+      color: #dbeafe;
+      max-width: 930px;
+    }
+
+    .hero-meta {
+      margin-top: 12px;
+      font-size: 13px;
+      color: #c8e2ff;
+    }
+
+    .toc {
+      margin-top: 16px;
+      background: rgba(10, 23, 44, 0.34);
+      border: 1px solid rgba(170, 206, 243, 0.3);
+      border-radius: 12px;
+      padding: 14px;
+      display: grid;
+      gap: 6px;
+      grid-template-columns: repeat(2, minmax(260px, 1fr));
+    }
+
+    .toc a {
+      color: #eaf5ff;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    .toc a:hover { text-decoration: underline; }
+
+    h2 {
+      margin: 28px 0 10px;
+      font-size: 24px;
+      color: #15395d;
+      border-bottom: 2px solid #d8e6f6;
+      padding-bottom: 7px;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      color: #20466e;
+    }
+
+    p { margin: 8px 0; }
+
+    .muted { color: var(--muted); }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px 18px;
+      margin-top: 12px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(300px, 1fr));
+      gap: 12px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    ul, ol { margin: 8px 0; }
+
+    li { margin: 4px 0; }
+
+    code {
+      background: #eef4fb;
+      border: 1px solid #d2dfec;
+      border-radius: 5px;
+      padding: 1px 6px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.95em;
+    }
+
+    pre {
+      margin: 10px 0;
+      background: #0f2238;
+      color: #e6f1fd;
+      border-radius: 10px;
+      border: 1px solid #244a73;
+      padding: 12px;
+      overflow-x: auto;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      color: inherit;
+      padding: 0;
+      font-size: 13px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+
+    th, td {
+      border: 1px solid #d9e3ef;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #edf4fb;
+      color: #1c436b;
+      font-weight: 600;
+    }
+
+    .badge {
+      display: inline-block;
+      border-radius: 100px;
+      padding: 3px 9px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid;
+      margin-right: 5px;
+      margin-bottom: 5px;
+    }
+
+    .b-accent { background: #e8f3ff; border-color: #bad6f3; color: #0a5596; }
+    .b-ok { background: #e9f9f2; border-color: #b7e8d2; color: #087854; }
+    .b-warn { background: #fff3e5; border-color: #f2cda2; color: #8a4a00; }
+    .b-danger { background: #ffecec; border-color: #efb9b9; color: #8f2525; }
+
+    .note {
+      border-left: 4px solid #1f8cff;
+      background: #edf6ff;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-top: 10px;
+    }
+
+    .warn-box {
+      border-left: 4px solid #d46f00;
+      background: #fff6ea;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-top: 10px;
+    }
+
+    .danger-box {
+      border-left: 4px solid #bd2f2f;
+      background: #fff0f0;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-top: 10px;
+    }
+
+    .footer {
+      margin-top: 26px;
+      border-top: 1px solid #d5e1ee;
+      padding-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 980px) {
+      .toc { grid-template-columns: 1fr; }
       .grid-2, .grid-3 { grid-template-columns: 1fr; }
-      h1 { font-size: 26px; }
+      h1 { font-size: 28px; }
+      h2 { font-size: 22px; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <main class="wrap">
     <section class="hero">
-      <h1>FlatMaster User Guide</h1>
-      <div class="meta">Operational guide for FlatMaster 1.2.x.</div>
-      <div class="meta">Updated: 2026-02-27.</div>
-      <div class="toc">
-        <a href="#prereq">1. Prerequisites</a>
-        <a href="#tabs">2. UI Overview</a>
-        <a href="#quick">3. Quick Workflow</a>
-        <a href="#matching">4. Matching Details and Overrides</a>
-        <a href="#modes">5. Processing Modes</a>
-        <a href="#output">6. Output Structure and Naming</a>
-        <a href="#logs">7. Progress and Logs</a>
-        <a href="#trouble">8. Troubleshooting</a>
+      <h1>FlatMaster User Manual</h1>
+      <p>
+        Full operational guide for FlatMaster v1.0.4, with strict parser rules for flat and dark libraries,
+        matching priorities, materialization behavior, and output structure.
+      </p>
+      <div class="hero-meta">Updated: 2026-03-05 | Target: Windows x64</div>
+      <nav class="toc">
+        <a href="#overview">1. What FlatMaster Does</a>
+        <a href="#requirements">2. Requirements</a>
+        <a href="#quickstart">3. Quick Start Workflow</a>
+        <a href="#features">4. Feature Overview</a>
+        <a href="#parser">5. Folder Parsing Rules and Constraints</a>
+        <a href="#matching">6. Dark Matching Priorities</a>
+        <a href="#materialization">7. Master Dark Materialization Rules</a>
+        <a href="#output">8. Output Structure and Naming</a>
+        <a href="#ui-notes">9. UI Behavior and Safety Rules</a>
+        <a href="#troubleshooting">10. Troubleshooting</a>
+      </nav>
+    </section>
+
+    <h2 id="overview">1. What FlatMaster Does</h2>
+    <section class="card">
+      <p>
+        FlatMaster scans flat and dark libraries, matches each flat exposure group to the best dark/bias candidate,
+        materializes missing master darks when required, and creates final master flats using either PixInsight or the native engine.
+      </p>
+      <div>
+        <span class="badge b-accent">Scan</span>
+        <span class="badge b-accent">Match</span>
+        <span class="badge b-accent">Override</span>
+        <span class="badge b-accent">Materialize</span>
+        <span class="badge b-accent">Integrate</span>
+        <span class="badge b-ok">Report</span>
       </div>
     </section>
 
-    <h2 id="prereq">1. Prerequisites</h2>
+    <h2 id="requirements">2. Requirements</h2>
     <div class="grid-2">
-      <div class="card">
-        <h3>General</h3>
+      <section class="card">
+        <h3>Platform and Runtime</h3>
         <ul>
-          <li>Windows 10 or 11</li>
-          <li>Input files in FITS, FIT, or XISF format</li>
-          <li>Sufficient disk space under selected output root</li>
+          <li>Windows 10/11 x64.</li>
+          <li>.NET Desktop Runtime 8.x installed on target machine.</li>
+          <li>Read access to input roots and write access to output root.</li>
         </ul>
-      </div>
-      <div class="card">
-        <h3>If using PixInsight mode</h3>
+      </section>
+
+      <section class="card">
+        <h3>File Types</h3>
         <ul>
-          <li>Valid <code>PixInsight.exe</code> path in Configuration tab</li>
-          <li>PixInsight script permissions enabled in your installation</li>
+          <li>Supported image extensions: <code>.fits</code>, <code>.fit</code>, <code>.xisf</code>.</li>
+          <li>Unsupported extensions are ignored during scan.</li>
+          <li>Metadata can be read from headers or inferred from filename patterns.</li>
         </ul>
-      </div>
+      </section>
     </div>
 
-    <h2 id="tabs">2. UI Overview</h2>
-    <div class="card">
+    <section class="card">
+      <h3>PixInsight Requirements (only if PixInsight engine is selected)</h3>
+      <ul>
+        <li>Valid <code>PixInsight.exe</code> path in Configuration tab.</li>
+        <li>Automation mode enabled by installation defaults.</li>
+      </ul>
+      <p class="muted">Native mode does not require PixInsight.</p>
+    </section>
+
+    <h2 id="quickstart">3. Quick Start Workflow</h2>
+    <section class="card">
+      <ol>
+        <li>Configuration tab: set engine, output root, output format, and roots.</li>
+        <li>Scan tab: click <strong>Scan Flats + Darks</strong> (or darks-only scan in darks-only mode).</li>
+        <li>Matching Details tab: click <strong>Run Matching</strong>, inspect rows, apply overrides if needed.</li>
+        <li>Process and Report tab: click <strong>Start Processing</strong>.</li>
+        <li>Review process log and final report.</li>
+      </ol>
+      <div class="note">
+        Matching is manual by design. Re-scanning clears previous matching results and requires a new Run Matching pass.
+      </div>
+    </section>
+
+    <h2 id="features">4. Feature Overview</h2>
+    <div class="grid-3">
+      <section class="card">
+        <h3>Scan Features</h3>
+        <ul>
+          <li>Separate flat and dark progress bars.</li>
+          <li>Directory/file counters while scanning.</li>
+          <li>Abort support with cancellation-aware loops.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h3>Matching Features</h3>
+        <ul>
+          <li>Group-level diagnostics with confidence and temp delta.</li>
+          <li>Expandable rows to inspect file members.</li>
+          <li>Override list supports existing masters and loose-dark candidates.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h3>Processing Features</h3>
+        <ul>
+          <li>PixInsight and native processing paths.</li>
+          <li>Darks-only mode for master dark generation.</li>
+          <li>Automatic pre-materialization of missing dark masters.</li>
+        </ul>
+      </section>
+    </div>
+
+    <h2 id="parser">5. Folder Parsing Rules and Constraints</h2>
+
+    <section class="card">
+      <h3>5.1 Global Traversal Rules</h3>
+      <ul>
+        <li>Traversal is recursive from each configured root.</li>
+        <li>Directories skipped by name (case-insensitive):
+          <code>_darkmasters</code>, <code>_calibratedflats</code>, <code>masters</code>, <code>_processed</code>, and dot-prefixed directories.</li>
+        <li>Only top-level files in each visited directory are enumerated for parsing.</li>
+      </ul>
+    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <h3>5.2 Flat Parsing Constraints</h3>
+        <ul>
+          <li>A file is eligible only when metadata has exposure time and image type is not dark/bias class.</li>
+          <li>Grouping key: exposure rounded to 3 decimals (for example <code>10.000s</code> -> <code>10s</code> style key).</li>
+          <li>Grouping scope: per directory and per exposure key.</li>
+          <li>Average flat temperature is computed from group members with valid temperature.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h3>5.3 Dark Parsing Constraints</h3>
+        <ul>
+          <li>Dark catalog includes: Dark, DarkFlat, MasterDark, MasterDarkFlat, Bias, MasterBias.</li>
+          <li>Bias/MasterBias may have missing exposure; dark classes require exposure (unless repaired from manifest).</li>
+          <li>Master dark pre-scan looks for <code>*MasterDark*.fits/.fit/.xisf</code>.</li>
+          <li><code>MasterDark.meta.json</code> can repair missing exposure/temperature/binning/gain.</li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="card">
+      <h3>5.4 DARKSXXX Root Constraint (Critical)</h3>
+      <p>
+        For loose dark materialization (priorities P2/P4/P6), frames are grouped strictly by the nearest ancestor folder matching:
+      </p>
+      <pre><code>DARKSXXX or DARKXXX, where XXX is 2 to 4 digits (regex: ^DARKS?\d{2,4}$)</code></pre>
+      <ul>
+        <li>All deeper subfolders under that DARKSXXX root are treated as one group source.</li>
+        <li>If a loose dark is outside a DARKSXXX hierarchy, it is not used for auto-materialization.</li>
+      </ul>
+      <div class="warn-box">
+        Recommended: keep all loose dark libraries under properly named DARKSXXX roots.
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>5.5 Metadata and Filename Inference</h3>
+      <p>When headers are missing values, FlatMaster attempts filename inference:</p>
+      <ul>
+        <li>Exposure inference patterns include values like <code>10s</code> and <code>EXPOSURE10.00</code>.</li>
+        <li>Temperature inference pattern includes tokens like <code>temp_-10.0</code>.</li>
+        <li>Image type inference uses filename/header keywords (MASTERDARK, DARK, FLAT, BIAS, etc.).</li>
+      </ul>
+      <div class="danger-box">
+        If both headers and filename lack exposure, that frame cannot participate in exposure-based dark matching.
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>5.6 Temperature Grouping Differences</h3>
       <table>
         <thead>
-          <tr><th>Tab</th><th>Purpose</th></tr>
+          <tr>
+            <th>Context</th>
+            <th>Temperature Rule</th>
+            <th>Purpose</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td>Configuration</td><td>Set PixInsight path, output path, output format, processing options, roots.</td></tr>
-          <tr><td>Scan and Match</td><td>Run combined scan and inspect flat/dark inventory with per-scan progress bars.</td></tr>
-          <tr><td>Matching Details</td><td>Review group-level matching decisions and apply manual dark overrides.</td></tr>
-          <tr><td>Process and Report</td><td>Start processing, monitor logs, review generated report.</td></tr>
+          <tr>
+            <td>Dark inventory display (Scan tab)</td>
+            <td>Cluster hysteresis +/-2.0 degC</td>
+            <td>Readable UI grouping for large dark libraries</td>
+          </tr>
+          <tr>
+            <td>Darks-only materialization</td>
+            <td>Tolerance +/-1.0 degC</td>
+            <td>Tighter integration buckets for produced masters</td>
+          </tr>
+          <tr>
+            <td>Main matching strict gate</td>
+            <td>Max delta 1.0 degC</td>
+            <td>Prefer temperature-close darks before fallback logic</td>
+          </tr>
         </tbody>
       </table>
-    </div>
+    </section>
 
-    <h2 id="quick">3. Quick Workflow</h2>
-    <div class="card">
-      <ol>
-        <li>Open <strong>Configuration</strong>.</li>
-        <li>Add at least one Flat Base Directory and one Dark Library Directory.
-          <ul>
-            <li>If running darks-only mode, only dark library roots are required.</li>
-          </ul>
-        </li>
-        <li>Choose output root and output format (<code>XISF</code> or <code>FITS</code>).</li>
-        <li>Choose engine: Native or PixInsight.</li>
-        <li>Go to <strong>Scan and Match</strong> and click <strong>Scan Flats + Darks</strong>.</li>
-        <li>Wait for both scan bars to complete.</li>
-        <li>Go to <strong>Matching Details</strong> to inspect selected dark per group (optional override).</li>
-        <li>Go to <strong>Process and Report</strong> and click <strong>Start Processing</strong>.</li>
-      </ol>
-      <p class="ok">Matching auto-runs after both scans complete, so diagnostics are ready when you open Matching Details.</p>
-    </div>
+    <h2 id="matching">6. Dark Matching Priorities</h2>
+    <section class="card">
+      <p>Matching order is deterministic:</p>
+      <table>
+        <thead>
+          <tr><th>Priority</th><th>Candidate Type</th><th>Exposure Rule</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>P1</td><td>MasterDark / MasterDarkFlat</td><td>Exact exposure</td></tr>
+          <tr><td>P2</td><td>Dark / DarkFlat (loose)</td><td>Exact exposure</td></tr>
+          <tr><td>P3</td><td>MasterDark / MasterDarkFlat</td><td>Nearest within 2s</td></tr>
+          <tr><td>P4</td><td>Dark / DarkFlat (loose)</td><td>Nearest within 2s</td></tr>
+          <tr><td>P5</td><td>MasterDark / MasterDarkFlat</td><td>Nearest within 10s (outside 2s)</td></tr>
+          <tr><td>P6</td><td>Dark / DarkFlat (loose)</td><td>Nearest within 10s (outside 2s)</td></tr>
+          <tr><td>P7</td><td>MasterBias / Bias</td><td>Fallback</td></tr>
+          <tr><td>P8</td><td>No match</td><td>No usable dark/bias candidate</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Additional gate: dark-over-bias thresholds (temperature and exposure) can allow a non-strict dark to beat bias fallback when within limits.
+      </p>
+    </section>
 
-    <h2 id="matching">4. Matching Details and Overrides</h2>
+    <h2 id="materialization">7. Master Dark Materialization Rules</h2>
     <div class="grid-2">
-      <div class="card">
-        <h3>Columns explained</h3>
+      <section class="card">
+        <h3>Main Flat Workflow</h3>
         <ul>
-          <li><code>Exposure (s)</code>: flat group exposure.</li>
-          <li><code>Avg Flat Temp</code>: average temperature of flats in group.</li>
-          <li><code>Selected Dark</code>: current candidate chosen by priority logic.</li>
-          <li><code>Reason</code>: priority code (P1-P8).</li>
-          <li><code>Temp Delta</code>: delta between group average flat temp and selected dark temperature reference.</li>
-          <li><code>Override</code>: force Auto or explicit candidate.</li>
+          <li>If selected match is loose dark (P2/P4/P6), FlatMaster creates a master dark first.</li>
+          <li>Created master is reused across all applicable flat groups.</li>
+          <li>Materialization happens before flat calibration/integration starts.</li>
         </ul>
-      </div>
-      <div class="card">
-        <h3>Override behavior</h3>
+      </section>
+
+      <section class="card">
+        <h3>Darks-Only Workflow</h3>
         <ul>
-          <li>Auto uses the normal matching algorithm.</li>
-          <li>Manual selection forces a specific dark path for that group during processing.</li>
-          <li>Override lists include both explicit masters and loose-dark representatives that can be materialized into masters.</li>
+          <li>No flat processing.</li>
+          <li>Raw darks bucketed by exposure/binning/gain and +/-1.0 degC tolerance.</li>
+          <li>One master produced per resulting bucket.</li>
         </ul>
-      </div>
+      </section>
     </div>
 
-    <h2 id="modes">5. Processing Modes</h2>
-    <div class="grid-2">
-      <div class="card">
-        <h3>Normal mode</h3>
-        <ul>
-          <li>Materializes required master darks first when loose darks are chosen.</li>
-          <li>Processes flat groups and creates master flats.</li>
-          <li>Can require darks or allow processing without dark subtraction when no match is found.</li>
-        </ul>
-      </div>
-      <div class="card">
-        <h3>Darks-only mode</h3>
-        <ul>
-          <li>Builds master darks only.</li>
-          <li>Groups raw darks by exposure and temperature clusters (default tolerance +/-1.0 degC).</li>
-          <li>Does not process flats.</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Bias fallback guard settings</h3>
-      <p>Two settings control when darks are allowed to beat bias fallback:</p>
+    <section class="card">
+      <h3>Important Constraints</h3>
       <ul>
-        <li>Temperature delta limit (degC)</li>
-        <li>Exposure delta limit (seconds)</li>
+        <li>Darks are integrated directly (not calibrated as flats).</li>
+        <li>Rows with fewer than 3 flat frames are marked warning and default to unchecked in Matching Details.</li>
+        <li>Unchecked rows remain visible and are excluded only from processing selection.</li>
       </ul>
-      <p>If absolute dark deltas exceed limits and bias exists, bias can be selected.</p>
-    </div>
+    </section>
 
-    <h2 id="output">6. Output Structure and Naming</h2>
-    <div class="card">
-      <h3>Master darks</h3>
+    <h2 id="output">8. Output Structure and Naming</h2>
+    <section class="card">
+      <h3>Master Darks</h3>
       <pre><code>OutputRoot\Master\Darks\25s\-10degC\MasterDark_25s_-10degC.xisf
 OutputRoot\Master\Darks\25s\-10degC\MasterDark_25s_-10degC.fits</code></pre>
-
-      <h3>Master flats</h3>
       <ul>
-        <li>Native engine naming includes bin token, for example:
-          <code>MasterFlat_2025-09-12_BLUE_Bin1_10.000s.xisf</code>
-        </li>
-        <li>PixInsight template naming omits bin token, for example:
-          <code>MasterFlat_2025-09-12_BLUE_10s.xisf</code>
-        </li>
+        <li>No GUID segment in final folder path.</li>
+        <li>Folder tokens use <code>s</code> and <code>degC</code> for clarity.</li>
       </ul>
 
-      <h3>Output mode</h3>
+      <h3>Master Flats</h3>
       <ul>
-        <li>Replicated separate tree writes under selected output root.</li>
-        <li>Optional cleanup removes calibrated flat intermediates after master creation.</li>
+        <li>Created under replicated output tree unless inline mode is selected.</li>
+        <li>Format controlled by Output Format setting (XISF or FITS).</li>
       </ul>
-    </div>
+    </section>
 
-    <h2 id="logs">7. Progress and Logs</h2>
-    <div class="card">
+    <h2 id="ui-notes">9. UI Behavior and Safety Rules</h2>
+    <section class="card">
       <ul>
-        <li>Scan tab shows two dedicated progress bars (flats and darks) with folder/file counters.</li>
-        <li>Status summary reports final counts after scan completion.</li>
-        <li>Process tab log is the authoritative runtime trace for materialization and engine stages.</li>
-        <li>Session log path is shown at startup and can be used for support/debugging.</li>
+        <li>Configuration values and selected roots are persisted in AppData.</li>
+        <li>Run Matching is manual and non-destructive.</li>
+        <li>Scan and processing expose Abort; long loops are cancellation-aware.</li>
+        <li>Matching table supports sorting, grouped expansion, include filtering, and per-group dark override.</li>
       </ul>
-    </div>
+    </section>
 
-    <h2 id="trouble">8. Troubleshooting</h2>
-    <div class="card">
-      <h3>Common issues</h3>
+    <h2 id="troubleshooting">10. Troubleshooting</h2>
+    <section class="card">
       <table>
         <thead>
-          <tr><th>Symptom</th><th>Likely cause</th><th>Action</th></tr>
+          <tr><th>Symptom</th><th>Likely Cause</th><th>What To Check</th></tr>
         </thead>
         <tbody>
           <tr>
-            <td>No match and bias selected unexpectedly</td>
-            <td>Strict temperature gate or bias-guard thresholds too tight</td>
-            <td>Review matching reason, then tune delta limits in Configuration</td>
+            <td>Bias selected when you expected dark</td>
+            <td>Temperature/exposure gate exceeded, or no strict dark candidate</td>
+            <td>Check Selection Reason, temp delta, and bias fallback thresholds in Configuration</td>
           </tr>
           <tr>
-            <td>No darks found during scan</td>
-            <td>Wrong root path or unsupported file extensions</td>
-            <td>Validate dark root and file types</td>
+            <td>Loose dark not materialized</td>
+            <td>File outside DARKSXXX hierarchy</td>
+            <td>Ensure source is under folder matching <code>DARKS?\d{2,4}</code></td>
           </tr>
           <tr>
-            <td>PixInsight processing fails to start</td>
-            <td>Invalid executable path or environment issue</td>
-            <td>Re-browse executable in Configuration and retry</td>
+            <td>No groups created from flats</td>
+            <td>Missing exposure metadata/type classification</td>
+            <td>Inspect filename/header fields and supported extension</td>
           </tr>
           <tr>
-            <td>Processing appears stalled in long dark stage</td>
-            <td>Large dark integration workload</td>
-            <td>Monitor detailed stage logs in Process tab</td>
+            <td>Rows auto-unchecked</td>
+            <td>Group has fewer than 3 flats</td>
+            <td>Add more flats to the same directory+exposure group or manually re-enable</td>
+          </tr>
+          <tr>
+            <td>Scan speed varies run to run</td>
+            <td>File cache + background IO/AV activity</td>
+            <td>Re-run same scenario and compare counters/timing in log</td>
           </tr>
         </tbody>
       </table>
+    </section>
 
-      <h3>Support bundle recommendation</h3>
-      <p>When reporting issues, include:</p>
-      <ul>
-        <li>Session log file path and full log content</li>
-        <li>Selected mode (Native or PixInsight)</li>
-        <li>Output format</li>
-        <li>One representative flat path and selected dark reason from Matching Details</li>
-      </ul>
-      <p class="warn">For deterministic debugging, rerun with unchanged selections and an empty output root.</p>
-    </div>
-  </div>
+    <section class="footer">
+      <p>Document scope: FlatMaster v1.0.4 behavior as implemented in current repository code.</p>
+      <p>For development internals, refer to architecture and developer guides shipped in the repository.</p>
+    </section>
+  </main>
 </body>
 </html>
