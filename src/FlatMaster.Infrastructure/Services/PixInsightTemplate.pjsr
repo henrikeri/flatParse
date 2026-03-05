@@ -57,7 +57,9 @@ function assignICTargets(IC, paths){
   IC.targetFrames = rows;
 }
 
-function saveXISF(win, outPath, hints){
+function saveImage(win, outPath, hints, outputExt){
+  var fmt = String(outputExt || "xisf").toLowerCase();
+  if (fmt !== "fits") fmt = "xisf";
   ensureDir(parentDir(outPath));
   var tried = [];
   function tryCall(label, fn){
@@ -70,16 +72,34 @@ function saveXISF(win, outPath, hints){
       return false;
     }
   }
-  if (tryCall("path,format,hints", function(){ win.saveAs(outPath, "xisf", hints); })) return;
-  if (tryCall("path,format,hints,overwrite", function(){ win.saveAs(outPath, "xisf", hints, false); })) return;
-  if (tryCall("path,format", function(){ win.saveAs(outPath, "xisf"); })) return;
-  if (tryCall("path,overwrite,format,hints", function(){ win.saveAs(outPath, false, "xisf", hints); })) return;
+  if (tryCall("path,format,hints", function(){ win.saveAs(outPath, fmt, hints); })) return;
+  if (tryCall("path,format,hints,overwrite", function(){ win.saveAs(outPath, fmt, hints, false); })) return;
+  if (tryCall("path,format", function(){ win.saveAs(outPath, fmt); })) return;
+  if (tryCall("path,overwrite,format,hints", function(){ win.saveAs(outPath, false, fmt, hints); })) return;
   if (tryCall("path,overwrite", function(){ win.saveAs(outPath, false); })) return;
   if (tryCall("path-only", function(){ win.saveAs(outPath); })) return;
   throw new Error("saveAs failed for " + outPath + " ; tried => " + tried.join(" | "));
 }
 
 function safeNum(x){ return (x===undefined||x===null||isNaN(x)) ? NaN : Number(x); }
+
+function saveSingleFrameAsMaster(srcPath, outPath, hints, outputExt, forDark){
+  var wins = ImageWindow.open(String(srcPath));
+  if (!wins || !wins.length) throw new Error("Unable to open single input frame: " + srcPath);
+  var win = wins[0];
+  if (!win) throw new Error("No window returned for single input frame: " + srcPath);
+
+  try {
+    var imgType = (!forDark) ? "Master Flat" : "Master Dark";
+    var kws = win.keywords || [];
+    kws.push(new FITSKeyword("IMAGETYP", imgType, "Type of image"));
+    win.keywords = kws;
+  } catch (e) { warn("[metadata] IMAGETYP not set: " + e); }
+
+  saveImage(win, outPath, hints, outputExt);
+  for (var i = 0; i < wins.length; i++)
+    try { wins[i].forceClose(); } catch(_){ }
+}
 
 function metaScore(c,want,match){
   var s=0;
@@ -96,6 +116,16 @@ function metaScore(c,want,match){
     if (dt <= match.maxTempDeltaC) s += (1.5 - dt*0.2);
   }
   return s;
+}
+
+function isTempAllowed(c, want, match, tempMax){
+  if (!match.preferClosestTemp) return true;
+  var ct = safeNum(c.temp), wt = safeNum(want.temp);
+  if (isNaN(ct) || isNaN(wt)) return true;
+  var maxDelta = safeNum(tempMax);
+  if (isNaN(maxDelta)) maxDelta = safeNum(match.darkOverBiasTempDeltaC);
+  if (isNaN(maxDelta)) maxDelta = safeNum(match.maxTempDeltaC);
+  return Math.abs(ct - wt) <= maxDelta;
 }
 
 function typePriority(t){
@@ -120,6 +150,14 @@ function typeLabel(t){
 
 function isDarkCalibrationType(t){
   return t === "MASTERDARKFLAT" || t === "DARKFLAT" || t === "MASTERDARK" || t === "DARK";
+}
+
+function isMasterDarkType(t){
+  return t === "MASTERDARKFLAT" || t === "MASTERDARK";
+}
+
+function isRawDarkType(t){
+  return t === "DARKFLAT" || t === "DARK";
 }
 
 function chooseBestByScore(candidates, want, match){
@@ -168,9 +206,14 @@ function chooseNearest(candidates, exp, want, match){
   return { candidate: best, delta: bestDelta };
 }
 
-function integrateToMaster(paths,outPath,forDark,hints,rej){
+function integrateToMaster(paths,outPath,forDark,hints,rej,outputExt){
   if(!paths.length) throw new Error("No frames for "+outPath);
-  if(paths.length < 3) throw new Error("ImageIntegration needs >=3 inputs; got "+paths.length);
+
+  if (paths.length === 1){
+    warn("Only 1 input frame; writing single-frame master for " + outPath);
+    saveSingleFrameAsMaster(paths[0], outPath, hints, outputExt, forDark);
+    return;
+  }
 
   var II=new ImageIntegration;
   assignIIImagesRowsPaths(II, paths);
@@ -185,14 +228,22 @@ function integrateToMaster(paths,outPath,forDark,hints,rej){
 
   if(forDark){
     II.normalization = II_ENUM.Norm_None;
-    II.rejection = II_ENUM.Rej_Winsor;
     II.rejectionNormalization = II_ENUM.RejNorm_None;
+    if (paths.length < 3) {
+      warn("Only " + paths.length + " dark inputs; disabling rejection.");
+      II.rejection = II_ENUM.Rej_None;
+    } else {
+      II.rejection = II_ENUM.Rej_Winsor;
+    }
   } else {
     II.normalization = II_ENUM.Norm_Mult;
     II.rejectionNormalization = II_ENUM.RejNorm_Eq;
 
     var n = paths.length;
-    if (n < 6) {
+    if (n < 3) {
+      warn("Only " + n + " flat inputs; disabling rejection.");
+      II.rejection = II_ENUM.Rej_None;
+    } else if (n < 6) {
       II.rejection = II_ENUM.Rej_PC;
       II.pcClipLow = 0.20;
       II.pcClipHigh = 0.10;
@@ -206,7 +257,7 @@ function integrateToMaster(paths,outPath,forDark,hints,rej){
     } else {
       II.rejection = II_ENUM.Rej_LinFit;
       II.linearFitLow = 5.0;
-      II.linearFitHigh = 4.0;
+      II.linearFitHigh = 3.5;
       II.clipLow = true;
       II.clipHigh = true;
     }
@@ -249,7 +300,7 @@ function integrateToMaster(paths,outPath,forDark,hints,rej){
     win.keywords = kws;
   } catch (e) { warn("[metadata] IMAGETYP not set: " + e); }
 
-  saveXISF(win, outPath, hints);
+  saveImage(win, outPath, hints, outputExt);
   win.forceClose();
 
   var extraIds = [ II.lowRejectionMapImageId, II.highRejectionMapImageId, II.slopeMapImageId ];
@@ -266,7 +317,7 @@ function integrateToMaster(paths,outPath,forDark,hints,rej){
     try{ if (typeof processEvents === "function") processEvents(); }catch(_){}
 }
 
-function calibrateFlats(paths,outDir,masterDarkPath,optimize,hints){
+function calibrateFlats(paths,outDir,masterDarkPath,optimize,hints,outputExt){
   ensureDir(outDir);
   var IC=new ImageCalibration;
   assignICTargets(IC, paths);
@@ -284,7 +335,7 @@ function calibrateFlats(paths,outDir,masterDarkPath,optimize,hints){
   }
 
   IC.outputDirectory=outDir;
-  IC.outputExtension=".xisf";
+  IC.outputExtension="." + outputExt;
   IC.outputPrefix="";
   IC.outputPostfix="_c";
   IC.outputHints=hints;
@@ -310,59 +361,132 @@ function calibrateFlats(paths,outDir,masterDarkPath,optimize,hints){
   return out;
 }
 
-function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match){
-  var exact = [];
-  for (var i=0;i<cats.length;i++){
-    var c = cats[i];
-    if (!isDarkCalibrationType(c.type)) continue;
-    var cexp = safeNum(c.exposure);
-    if (isNaN(cexp)) continue;
-    if (Math.abs(cexp - exp) < 0.001) exact.push(c);
+function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt){
+  if (want && want.manualDarkPath){
+    var requested = String(want.manualDarkPath).replace(/\\/g,"/").toLowerCase();
+    for (var m=0; m<cats.length; m++){
+      var forced = cats[m];
+      var fp = String(forced.path).replace(/\\/g,"/").toLowerCase();
+      if (fp === requested){
+        return { path: forced.path, optimize: false, kind: "Override " + typeLabel(forced.type) };
+      }
+    }
   }
 
-  // 1) Exact dark match (time + metadata score, including temperature).
-  if (exact.length){
-    var bestExact = chooseBestByScore(exact, want, match);
-    return { path: bestExact.path, optimize: false, kind: typeLabel(bestExact.type) + "(exact)" };
-  }
-
-  if (CFG.allowNearestExposureWithOptimize){
-    var near2 = [];
-    var near10 = [];
-
-    for (var j=0;j<cats.length;j++){
-      var d = cats[j];
-      if (!isDarkCalibrationType(d.type)) continue;
-      var dexp = safeNum(d.exposure);
-      if (isNaN(dexp)) continue;
-      var delta = Math.abs(dexp - exp);
-
-      if (delta >= 0.001 && delta <= 2.0) near2.push(d);
-      else if (delta > 2.0 && delta <= 10.0) near10.push(d);
+  function pickFromBucket(typePredicate, minExclusive, maxInclusive, exact, tempMax){
+    var bucket = [];
+    for (var i=0;i<cats.length;i++){
+      var c = cats[i];
+      if (!isDarkCalibrationType(c.type) || !typePredicate(c.type)) continue;
+      if (!isTempAllowed(c, want, match, tempMax)) continue;
+      var cexp = safeNum(c.exposure);
+      if (isNaN(cexp)) continue;
+      var delta = Math.abs(cexp - exp);
+      if (exact){
+        if (delta < 0.001) bucket.push(c);
+      } else if (delta > minExclusive && delta <= maxInclusive){
+        bucket.push(c);
+      }
     }
 
-    // 2) Nearest dark within <2s.
-    var best2 = chooseNearest(near2, exp, want, match);
-    if (best2){
+    if (!bucket.length) return null;
+    if (exact) return chooseBestByScore(bucket, want, match);
+    var nearest = chooseNearest(bucket, exp, want, match);
+    return nearest ? nearest.candidate : null;
+  }
+
+  function runDarkPriorityPass(tempMax, suffix){
+    // 1) Master dark exact match.
+    var p1 = pickFromBucket(isMasterDarkType, 0, 0, true, tempMax);
+    if (p1){
+      return { path: p1.path, optimize: false, kind: "P1 " + typeLabel(p1.type) + "(exact" + suffix + ")" };
+    }
+
+    // 2) Loose/raw dark exact match.
+    var p2 = pickFromBucket(isRawDarkType, 0, 0, true, tempMax);
+    if (p2){
+      return { path: p2.path, optimize: false, kind: "P2 " + typeLabel(p2.type) + "(exact" + suffix + ")" };
+    }
+
+    // 3) Master dark within +/-2s.
+    var p3 = pickFromBucket(isMasterDarkType, 0.001, 2.0, false, tempMax);
+    if (p3){
       return {
-        path: best2.candidate.path,
+        path: p3.path,
         optimize: false,
-        kind: typeLabel(best2.candidate.type) + "(nearest<=2s," + kexp(best2.candidate.exposure) + "s)"
+        kind: "P3 " + typeLabel(p3.type) + "(nearest<=2s," + kexp(p3.exposure) + "s" + suffix + ")"
       };
     }
 
-    // 3) Nearest dark within <10s (with optimization).
-    var best10 = chooseNearest(near10, exp, want, match);
-    if (best10){
+    // 4) Loose/raw dark within +/-2s.
+    var p4 = pickFromBucket(isRawDarkType, 0.001, 2.0, false, tempMax);
+    if (p4){
       return {
-        path: best10.candidate.path,
-        optimize: true,
-        kind: typeLabel(best10.candidate.type) + "(nearest<=10s+optimize," + kexp(best10.candidate.exposure) + "s)"
+        path: p4.path,
+        optimize: false,
+        kind: "P4 " + typeLabel(p4.type) + "(nearest<=2s," + kexp(p4.exposure) + "s" + suffix + ")"
       };
+    }
+
+    // 5) Master dark within +/-10s (outside +/-2s).
+    var p5 = pickFromBucket(isMasterDarkType, 2.0, 10.0, false, tempMax);
+    if (p5){
+      return {
+        path: p5.path,
+        optimize: false,
+        kind: "P5 " + typeLabel(p5.type) + "(nearest<=10s," + kexp(p5.exposure) + "s" + suffix + ")"
+      };
+    }
+
+    // 6) Loose/raw dark within +/-10s (outside +/-2s).
+    var p6 = pickFromBucket(isRawDarkType, 2.0, 10.0, false, tempMax);
+    if (p6){
+      return {
+        path: p6.path,
+        optimize: false,
+        kind: "P6 " + typeLabel(p6.type) + "(nearest<=10s," + kexp(p6.exposure) + "s" + suffix + ")"
+      };
+    }
+
+    return null;
+  }
+
+  var strict = runDarkPriorityPass(match.maxTempDeltaC, "");
+  if (strict) return strict;
+
+  var darkOverBiasTempThreshold = safeNum(match.darkOverBiasTempDeltaC);
+  var darkOverBiasExposureThreshold = safeNum(match.darkOverBiasExposureDeltaSeconds);
+  if ((!isNaN(darkOverBiasTempThreshold) && darkOverBiasTempThreshold > 0) ||
+      (!isNaN(darkOverBiasExposureThreshold) && darkOverBiasExposureThreshold > 0)){
+    var unrestricted = runDarkPriorityPass(Number.POSITIVE_INFINITY, "");
+    if (unrestricted){
+      var hasBias = false;
+      var selectedTemp = NaN;
+      var selectedExposure = NaN;
+      for (var x=0; x<cats.length; x++){
+        var c = cats[x];
+        if (c.type === "MASTERBIAS" || c.type === "BIAS") hasBias = true;
+        if (String(c.path) === String(unrestricted.path)){
+          selectedTemp = safeNum(c.temp);
+          selectedExposure = safeNum(c.exposure);
+        }
+      }
+
+      var wt = safeNum(want.temp);
+      var dt = (!isNaN(selectedTemp) && !isNaN(wt)) ? Math.abs(selectedTemp - wt) : NaN;
+      var de = !isNaN(selectedExposure) ? Math.abs(selectedExposure - exp) : NaN;
+      var tempWithin = isNaN(darkOverBiasTempThreshold) || darkOverBiasTempThreshold <= 0 || isNaN(dt) || dt <= darkOverBiasTempThreshold;
+      var exposureWithin = isNaN(darkOverBiasExposureThreshold) || darkOverBiasExposureThreshold <= 0 || isNaN(de) || de <= darkOverBiasExposureThreshold;
+      if (!hasBias || (tempWithin && exposureWithin)){
+        var tempLabel = isNaN(darkOverBiasTempThreshold) ? "n/a" : darkOverBiasTempThreshold.toFixed(1);
+        var expLabel = isNaN(darkOverBiasExposureThreshold) ? "n/a" : darkOverBiasExposureThreshold.toFixed(3);
+        unrestricted.kind = unrestricted.kind + ",temp<=" + tempLabel + "C,exp<=" + expLabel + "s";
+        return unrestricted;
+      }
     }
   }
 
-  // 4) Bias fallback.
+  // 7) Bias fallback.
   var masterBias = [];
   var bias = [];
   for (var k=0;k<cats.length;k++){
@@ -373,21 +497,21 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match){
 
   if (masterBias.length){
     var bestMasterBias = chooseBestByScore(masterBias, want, match);
-    return { path: bestMasterBias.path, optimize: false, kind: "MasterBias" };
+    return { path: bestMasterBias.path, optimize: false, kind: "P7 MasterBias" };
   }
 
   if (bias.length >= 3){
-    var outBias = joinPath(cacheDir, "MasterBias.xisf");
-    integrateToMaster(bias.map(function(x){ return x.path; }), outBias, true, hintsCal, rej);
-    return { path: outBias, optimize: false, kind: "Bias(built)" };
+    var outBias = joinPath(cacheDir, "MasterBias." + outExt);
+    integrateToMaster(bias.map(function(x){ return x.path; }), outBias, true, hintsCal, rej, outExt);
+    return { path: outBias, optimize: false, kind: "P7 Bias(built)" };
   }
 
   if (bias.length){
     var bestBias = chooseBestByScore(bias, want, match);
-    return { path: bestBias.path, optimize: false, kind: "Bias(single)" };
+    return { path: bestBias.path, optimize: false, kind: "P7 Bias(single)" };
   }
 
-  // 5) No dark/bias found.
+  // 8) No dark/bias found.
   return null;
 }
 
@@ -426,13 +550,15 @@ function run(){
   var rej = CFG.rejection || {lowSigma:5.0, highSigma:5.0};
   var hintsCal = CFG.xisfHintsCal||"";
   var hintsMaster= CFG.xisfHintsMaster||"";
+  var outExt = String(CFG.outputExtension || "xisf").toLowerCase();
+  if (outExt !== "fits") outExt = "xisf";
   var match = CFG.match || {};
 
   for (var j=0;j<plan.length;j++){
     var job=plan[j], dir=job.dirPath;
     log("\n=== FLAT dir: "+dir+" ===");
 
-    var rel = job.relDir || "";
+    var rel = String(job.relDir || "");
     if (rel === ".") rel = "";
     var outRoot = job.outRoot || dir;
     var outBase = rel ? joinPath(outRoot, rel) : outRoot;
@@ -449,7 +575,7 @@ function run(){
 
       var dateStr = guessDateFromPath(dir, files);
       var filt = guessFilterFrom(files, dir);
-      var masterName = "MasterFlat_" + dateStr + "_" + filt + "_" + kexp(exp) + "s.xisf";
+      var masterName = "MasterFlat_" + dateStr + "_" + filt + "_" + kexp(exp) + "s." + outExt;
       var masterOut = joinPath(outBase, masterName);
 
       if (File.exists(masterOut)){
@@ -458,12 +584,12 @@ function run(){
       }
 
       var cacheDir = joinPath(dir, CFG.cacheDirName||"_DarkMasters");
-      var sel = pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match);
+      var sel = pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt);
 
       if(!sel || !sel.path){
         warn("  No suitable dark/bias @ " + kexp(exp) + " s in " + dir + " - integrating flats without subtraction.");
         pulse("NO_DARK_BEFORE_INTEGRATE");
-        integrateToMaster(files, masterOut, false, hintsMaster, rej);
+        integrateToMaster(files, masterOut, false, hintsMaster, rej, outExt);
         pulse("NO_DARK_AFTER_INTEGRATE");
         for (var pe1=0; pe1<10; pe1++)
           try{ if (typeof processEvents === "function") processEvents(); }catch(_){}
@@ -474,28 +600,42 @@ function run(){
       log("  Using ["+sel.kind+"] optimize="+sel.optimize);
 
       var calOut = joinPath(outBase, (CFG.calibratedSubdirBase||"_CalibratedFlats")+"_"+kexp(exp)+"s");
-      pulse("DARK_BEFORE_CALIBRATE");
-      var calFiles = calibrateFlats(files, calOut, sel.path, sel.optimize, hintsCal) || [];
-      pulse("DARK_AFTER_CALIBRATE");
-      if(!calFiles.length){
-        var ff=new FileFind;
-        if(ff.begin(joinPath(calOut,"*.xisf"))){
-          do{
-            if(ff.isFile) calFiles.push(joinPath(calOut,ff.name));
-          } while(ff.next());
+      var calFiles = [];
+      var usedDarkCalibration = false;
+      try{
+        pulse("DARK_BEFORE_CALIBRATE");
+        calFiles = calibrateFlats(files, calOut, sel.path, sel.optimize, hintsCal, outExt) || [];
+        pulse("DARK_AFTER_CALIBRATE");
+
+        if(!calFiles.length){
+          var ff=new FileFind;
+          if(ff.begin(joinPath(calOut,"*." + outExt))){
+            do{
+              if(ff.isFile) calFiles.push(joinPath(calOut,ff.name));
+            } while(ff.next());
+          }
+          ff.end();
         }
-        ff.end();
+
+        if (calFiles.length >= 3){
+          usedDarkCalibration = true;
+        } else {
+          warn("  Calibration produced fewer than 3 calibrated flats; using original flats for integration.");
+          calFiles = files.slice(0);
+        }
+      } catch (calErr){
+        warn("  Calibration with selected dark failed (" + calErr + "); using original flats for integration.");
+        calFiles = files.slice(0);
       }
-      if(!calFiles.length) throw new Error("No calibrated flats in "+calOut);
 
       pulse("DARK_BEFORE_INTEGRATE");
-      integrateToMaster(calFiles, masterOut, false, hintsMaster, rej);
+      integrateToMaster(calFiles, masterOut, false, hintsMaster, rej, outExt);
       pulse("DARK_AFTER_INTEGRATE");
       for (var pe2=0; pe2<10; pe2++)
         try{ if (typeof processEvents === "function") processEvents(); }catch(_){}
       log("  Saved: "+masterOut);
 
-      if (CFG.deleteCalibrated){
+      if (CFG.deleteCalibrated && usedDarkCalibration){
         try{
           var delFF=new FileFind;
           if (delFF.begin(joinPath(calOut,"*"))){
@@ -527,3 +667,4 @@ try{
   pulse("DONE_ERR:" + e);
   touch(__SENTINEL, "ERROR: "+e);
 }
+

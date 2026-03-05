@@ -1,0 +1,349 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FlatMaster Architecture Specification</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+      --line: #334155;
+      --ok: #34d399;
+      --warn: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: Segoe UI, Arial, sans-serif; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 44px; }
+    .hero { background: linear-gradient(180deg, #0b1220 0%, #0f172a 100%); border: 1px solid var(--line); border-radius: 10px; padding: 22px; }
+    h1 { margin: 0; font-size: 32px; }
+    h2 { margin-top: 30px; font-size: 23px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+    h3 { margin-top: 20px; font-size: 18px; }
+    p { color: var(--text); }
+    .meta { color: var(--muted); margin-top: 8px; font-size: 14px; }
+    .toc { margin-top: 16px; display: grid; gap: 6px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 14px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 14px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 14px; }
+    pre { background: #020617; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; color: #cbd5e1; }
+    code { background: #1e293b; border-radius: 4px; padding: 1px 5px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid var(--line); padding: 8px 10px; vertical-align: top; text-align: left; }
+    th { background: var(--panel-2); }
+    ul, ol { margin-top: 8px; margin-bottom: 8px; }
+    .tag { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; color: var(--muted); font-size: 12px; margin-right: 6px; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    @media (max-width: 900px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      h1 { font-size: 26px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>FlatMaster Architecture Specification</h1>
+      <div class="meta">Version: 1.2.x | Target runtime: .NET 8 (Windows/WPF) | Updated: 2026-02-27</div>
+      <div class="meta">This document is implementation-accurate for the current repository state.</div>
+      <div class="toc">
+        <a href="#scope">1. Scope</a>
+        <a href="#system">2. System Decomposition</a>
+        <a href="#runtime">3. Runtime Flows</a>
+        <a href="#data">4. Data Model and Contracts</a>
+        <a href="#match">5. Dark Matching Subsystem</a>
+        <a href="#materialize">6. Master Dark Materialization</a>
+        <a href="#engines">7. Processing Engines</a>
+        <a href="#threading">8. Concurrency and Performance</a>
+        <a href="#persist">9. Persistence, Logging, and Diagnostics</a>
+        <a href="#config">10. Configuration Surface</a>
+        <a href="#failure">11. Failure Model and Recovery</a>
+        <a href="#extension">12. Extension Points</a>
+      </div>
+    </section>
+
+    <h2 id="scope">1. Scope</h2>
+    <div class="card">
+      <p>FlatMaster is a desktop orchestration application for flat-frame calibration workflows. It scans flat and dark libraries, computes deterministic matching decisions, materializes required master darks, and runs final flat calibration/integration via either:</p>
+      <ul>
+        <li>PixInsight script automation (<code>PixInsightService</code> + templates), or</li>
+        <li>Native in-process stacking (<code>NativeProcessingService</code> + <code>ImageStackingAlgorithms</code>).</li>
+      </ul>
+      <p>Primary solution directories:</p>
+      <ul>
+        <li><code>src/FlatMaster.Core</code> (contracts + models)</li>
+        <li><code>src/FlatMaster.Infrastructure</code> (service implementations)</li>
+        <li><code>src/FlatMaster.WPF</code> (UI, orchestration ViewModel, app composition)</li>
+        <li><code>tests/FlatMaster.Tests</code> (unit tests)</li>
+      </ul>
+    </div>
+
+    <h2 id="system">2. System Decomposition</h2>
+    <div class="grid-3">
+      <div class="card">
+        <h3>Presentation</h3>
+        <p><code>FlatMaster.WPF</code></p>
+        <ul>
+          <li>MVVM with a partial <code>MainViewModel</code> split by concern (scan, matching, processing, settings, logging, selection).</li>
+          <li>Tabs: Configuration, Scan and Match, Matching Details, Process and Report.</li>
+          <li>User settings persisted in LocalAppData JSON.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Core</h3>
+        <p><code>FlatMaster.Core</code></p>
+        <ul>
+          <li>Interfaces for scanner/matcher/engines/materializer/reporting.</li>
+          <li>Canonical models: <code>DirectoryJob</code>, <code>ExposureGroup</code>, <code>DarkFrame</code>, <code>ProcessingPlan</code>.</li>
+          <li>No infrastructure dependencies.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Infrastructure</h3>
+        <p><code>FlatMaster.Infrastructure</code></p>
+        <ul>
+          <li>Metadata read + scan services.</li>
+          <li>Matching implementation with priority waterfall.</li>
+          <li>Master dark materialization, native math, PixInsight script generation/execution, report generation.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Dependency Graph</h3>
+      <pre>MainViewModel
+  -> IFileScannerService
+  -> IDarkMatchingService
+  -> IMasterDarkMaterializer
+  -> IImageProcessingEngine (native)
+  -> IPixInsightService
+  -> IProcessingReportService
+
+MasterDarkMaterializer
+  -> IMetadataReaderService
+  -> IDarkMatchingService
+  -> IPixInsightService
+  -> IImageProcessingEngine</pre>
+      <p>Dependency injection is configured in <code>src/FlatMaster.WPF/App.xaml.cs</code>.</p>
+    </div>
+
+    <h2 id="runtime">3. Runtime Flows</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Scan Flow</h3>
+        <ol>
+          <li>User triggers <code>ScanAll</code>.</li>
+          <li>If flats and darks roots are on different drives, both scans run in parallel; otherwise sequentially.</li>
+          <li>Flat scan returns grouped <code>DirectoryJob</code> objects with exposure groups and average flat temperature.</li>
+          <li>Dark scan catalogs dark/master/bias files and associates each with nearest <code>DARKS###</code> ancestor when present.</li>
+          <li>After both scans complete, matching is auto-generated.</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h3>Process Flow</h3>
+        <ol>
+          <li>Build immutable <code>ProcessingPlan</code> from selected UI rows and overrides.</li>
+          <li>Preview and optionally materialize missing master darks first.</li>
+          <li>Run selected engine:
+            <ul>
+              <li>Native: in-process calibration + integration</li>
+              <li>PixInsight: per-folder script invocation, template-selected mode</li>
+            </ul>
+          </li>
+          <li>Regenerate matching diagnostics and produce processing report.</li>
+        </ol>
+      </div>
+    </div>
+
+    <h2 id="data">4. Data Model and Contracts</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>Type</th><th>Purpose</th><th>Key fields</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>ExposureGroup</code></td>
+            <td>Unit of flat processing</td>
+            <td><code>ExposureTime</code>, <code>FilePaths</code>, <code>AverageTemperatureC</code>, <code>MatchingCriteria</code></td>
+          </tr>
+          <tr>
+            <td><code>DarkFrame</code></td>
+            <td>Catalog entry for dark/bias/master files</td>
+            <td><code>Type</code>, <code>ExposureTime</code>, <code>Temperature</code>, <code>Binning</code>, <code>Gain</code>, <code>DarkGroupFolder</code></td>
+          </tr>
+          <tr>
+            <td><code>DirectoryJob</code></td>
+            <td>Per-folder processing job</td>
+            <td><code>DirectoryPath</code>, <code>RelativeDirectory</code>, <code>ExposureGroups</code>, <code>OutputRootPath</code></td>
+          </tr>
+          <tr>
+            <td><code>ProcessingConfiguration</code></td>
+            <td>Execution options</td>
+            <td><code>OutputFileExtension</code>, rejection parameters, dark matching options, cache folder names</td>
+          </tr>
+          <tr>
+            <td><code>ProcessingPlan</code></td>
+            <td>Input contract for engines/materializer</td>
+            <td><code>Jobs</code>, <code>DarkCatalog</code>, <code>Configuration</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="match">5. Dark Matching Subsystem</h2>
+    <div class="card">
+      <p><code>DarkMatchingService.FindBestDark</code> implements a strict priority waterfall. Temperature gate and bias-guard thresholds are first-class controls.</p>
+      <h3>Core rules</h3>
+      <ol>
+        <li>P1: Master dark exact exposure.</li>
+        <li>P2: Loose dark exact exposure.</li>
+        <li>P3: Master dark within + or -2 s.</li>
+        <li>P4: Loose dark within + or -2 s.</li>
+        <li>P5: Master dark within + or -10 s (outside +/-2 s).</li>
+        <li>P6: Loose dark within + or -10 s (outside +/-2 s).</li>
+        <li>P7: Bias fallback (MasterBias first, then Bias).</li>
+        <li>P8: No match.</li>
+      </ol>
+      <p>Strict pass uses <code>MaxTempDeltaC</code> when both flat and dark temperatures exist. A second relaxed pass can still select a dark before bias if both absolute deltas are within configured guards:</p>
+      <ul>
+        <li><code>DarkOverBiasTempDeltaC</code></li>
+        <li><code>DarkOverBiasExposureDeltaSeconds</code></li>
+      </ul>
+      <p><span class="ok">Deterministic tie-breaking:</span> score, then type priority, then file path lexical order.</p>
+    </div>
+
+    <h2 id="materialize">6. Master Dark Materialization</h2>
+    <div class="card">
+      <h3>Normal mode</h3>
+      <ol>
+        <li>Analyze selected flat groups and collect folders requiring loose-dark integration.</li>
+        <li>Treat all content under top-level <code>DARKS###</code> folder as one source bucket.</li>
+        <li>Prefer reuse when valid master/manifest is present and key hash matches current inputs.</li>
+        <li>Materialize via Native or PixInsight path.</li>
+        <li>Register created masters back into plan-level catalog so subsequent groups reuse them.</li>
+      </ol>
+      <h3>Darks-only mode</h3>
+      <ol>
+        <li>Cluster raw darks by exposure, binning, gain, and temperature buckets.</li>
+        <li>Temperature clustering tolerance is passed from UI (default 1.0 degC).</li>
+        <li>Output path convention:
+          <code>OutputRoot/Master/Darks/&lt;seconds&gt;s/&lt;temp&gt;degC/MasterDark_...&lt;ext&gt;</code>
+        </li>
+      </ol>
+    </div>
+
+    <h2 id="engines">7. Processing Engines</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>PixInsight Engine</h3>
+        <ul>
+          <li>One-folder-per-invocation policy for stability (<code>batchSize = 1</code> enforced).</li>
+          <li>Template selection:
+            <ul>
+              <li><code>PixInsightTemplate.pjsr</code> for flat calibration + integration</li>
+              <li><code>PixInsightTemplate.DARKS.pjsr</code> for dark integration only</li>
+            </ul>
+          </li>
+          <li>Completion signaling via sentinel file and detached process detection.</li>
+          <li>No preflight stage in current implementation.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Native Engine</h3>
+        <ul>
+          <li>Multithreaded frame load/calibration and pixel stack integration.</li>
+          <li>Flat calibration uses dark subtraction only when a dark/bias is matched.</li>
+          <li>Rejection strategy by stack size:
+            <ul>
+              <li>&lt;3: Average</li>
+              <li>3-5: Percentile Clip</li>
+              <li>6-15: Winsorized Sigma Clip</li>
+              <li>&gt;15: Linear Fit Clipping</li>
+            </ul>
+          </li>
+          <li>Writes either XISF or FITS based on config.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 id="threading">8. Concurrency and Performance</h2>
+    <div class="card">
+      <ul>
+        <li>Metadata reader parallelism auto-tuned from CPU count and available memory.</li>
+        <li>Flat and dark scans can run concurrently when roots are on different drives.</li>
+        <li>Native processing uses bounded parallel loops and partitioned pixel ranges.</li>
+        <li>Master dark materialization queue executes in parallel for native mode and serially where engine constraints require it.</li>
+      </ul>
+    </div>
+
+    <h2 id="persist">9. Persistence, Logging, and Diagnostics</h2>
+    <div class="card">
+      <h3>UI settings persistence</h3>
+      <p>Stored at <code>%LOCALAPPDATA%/FlatMaster/user-settings.json</code>.</p>
+      <p>Persists directory roots, output path, output format, checkboxes, threshold values, and selection state.</p>
+      <h3>Logs</h3>
+      <ul>
+        <li>Session log path is shown in UI log at startup.</li>
+        <li>Detailed app log is written to temp with timestamped filename.</li>
+        <li>Processing progress messages are the canonical UI progress input.</li>
+      </ul>
+      <h3>Licensing files</h3>
+      <p>License and third-party notices are embedded as resources and extracted on demand for self-contained deployments.</p>
+    </div>
+
+    <h2 id="config">10. Configuration Surface</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>Area</th><th>Key controls</th><th>Defaults</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Output</td>
+            <td>Root directory, output mode, copy-only-processed, output format</td>
+            <td>Replicated tree, XISF</td>
+          </tr>
+          <tr>
+            <td>Matching</td>
+            <td>Temp gate, bias guard temp delta, bias guard exposure delta</td>
+            <td>1.0 degC strict gate, 5.0/5.0 bias guards</td>
+          </tr>
+          <tr>
+            <td>Processing</td>
+            <td>Native vs PixInsight, require darks, delete calibrated flats</td>
+            <td>PixInsight path from appsettings, native optional</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="failure">11. Failure Model and Recovery</h2>
+    <div class="card">
+      <ul>
+        <li>All long-running operations are cancellation-aware.</li>
+        <li>Materialization aggregates per-folder errors and throws summarized exceptions.</li>
+        <li>PixInsight execution retries multiple argument variants when startup/runtime behavior is unstable.</li>
+        <li>UI remains orchestration authority: validation before execution, explicit user confirmation before heavy materialization.</li>
+      </ul>
+    </div>
+
+    <h2 id="extension">12. Extension Points</h2>
+    <div class="card">
+      <ul>
+        <li>New file formats: extend <code>FitsImageIO</code> and metadata reader.</li>
+        <li>Alternative matching heuristics: evolve <code>IDarkMatchingService</code> implementation while preserving <code>DarkMatchResult</code>.</li>
+        <li>Alternative engine: implement <code>IImageProcessingEngine</code> and plug via DI.</li>
+        <li>Additional report metrics: extend <code>ProcessingReportService</code> and model.</li>
+      </ul>
+      <p class="warn">Contract stability recommendation: keep <code>Core</code> interfaces backward-compatible and place experimental behavior behind configuration toggles.</p>
+    </div>
+  </div>
+</body>
+</html>

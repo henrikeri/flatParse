@@ -50,8 +50,8 @@ public sealed record MatchingDiagnostic
     /// <summary>
     /// Display-friendly temperature delta ("N/A" when unavailable)
     /// </summary>
-    public string TemperatureDeltaDisplay => TemperatureDeltaC.HasValue 
-        ? TemperatureDeltaC.Value.ToString("F1", CultureInfo.InvariantCulture) + "°C" 
+    public string TemperatureDeltaDisplay => TemperatureDeltaC.HasValue
+        ? TemperatureDeltaC.Value.ToString("F1", CultureInfo.InvariantCulture) + " degC"
         : "N/A";
 
     /// <summary>
@@ -62,7 +62,7 @@ public sealed record MatchingDiagnostic
     /// <summary>
     /// Alternative dark candidates that were considered but rejected
     /// </summary>
-    public List<DarkMatchingCandidate> RejectedAlternatives { get; init; } = new();
+    public List<DarkMatchingCandidate> RejectedAlternatives { get; init; } = [];
 
     /// <summary>
     /// Confidence score (0.0-1.0) in the selection
@@ -72,7 +72,7 @@ public sealed record MatchingDiagnostic
     /// <summary>
     /// Warning/info messages about this selection
     /// </summary>
-    public List<string> Warnings { get; init; } = new();
+    public List<string> Warnings { get; init; } = [];
 }
 
 /// <summary>

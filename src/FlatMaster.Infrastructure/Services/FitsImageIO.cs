@@ -15,7 +15,9 @@
 
 using System.Buffers.Binary;
 using System.Globalization;
+using System.IO.Compression;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 
 namespace FlatMaster.Infrastructure.Services;
@@ -24,14 +26,11 @@ namespace FlatMaster.Infrastructure.Services;
 /// Low-level FITS and XISF pixel data reader/writer.
 /// Supports 16-bit unsigned integer and 32/64-bit IEEE float pixel buffers.
 /// </summary>
-public sealed class FitsImageIO
+public sealed partial class FitsImageIO(ILogger logger)
 {
-    private readonly ILogger _logger;
+    private static readonly Regex FitsKeywordRegex = MyRegex();
 
-    public FitsImageIO(ILogger logger)
-    {
-        _logger = logger;
-    }
+    private readonly ILogger _logger = logger;
 
     // ───────────────────── Data Structures ─────────────────────
 
@@ -130,7 +129,7 @@ public sealed class FitsImageIO
 
     // ───────────────────── XISF Reading ─────────────────────
 
-    private async Task<ImageData> ReadXisfAsync(string path, CancellationToken ct)
+    private static async Task<ImageData> ReadXisfAsync(string path, CancellationToken ct)
     {
         await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536);
 
@@ -151,28 +150,36 @@ public sealed class FitsImageIO
 
         // Extract FITSKeywords — strip single quotes (XISF wraps strings like value="'FLAT'")
         foreach (System.Text.RegularExpressions.Match m in
-            System.Text.RegularExpressions.Regex.Matches(xml,
-                @"<FITSKeyword\s+(?:name|keyword)=""([^""]+)""\s+value=""([^""]*)""",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            FitsKeywordRegex.Matches(xml))
         {
             headers[m.Groups[1].Value] = m.Groups[2].Value.Trim('\'', ' ');
         }
 
-        // Parse Image element
-        var imgMatch = System.Text.RegularExpressions.Regex.Match(xml,
-            @"<Image\s[^>]*geometry=""(\d+):(\d+):?(\d+)?""[^>]*sampleFormat=""([^""]+)""[^>]*location=""attachment:(\d+):(\d+)""",
+        var imageTagMatch = System.Text.RegularExpressions.Regex.Match(
+            xml,
+            @"<Image\b[^>]*>",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-        if (!imgMatch.Success)
+        if (!imageTagMatch.Success)
             throw new InvalidDataException($"Cannot parse XISF Image element in {path}");
 
-        int width = int.Parse(imgMatch.Groups[1].Value, CultureInfo.InvariantCulture);
-        int height = int.Parse(imgMatch.Groups[2].Value, CultureInfo.InvariantCulture);
-        int channels = imgMatch.Groups[3].Success && imgMatch.Groups[3].Value.Length > 0
-            ? int.Parse(imgMatch.Groups[3].Value, CultureInfo.InvariantCulture) : 1;
-        string sampleFormat = imgMatch.Groups[4].Value;
-        long attachOffset = long.Parse(imgMatch.Groups[5].Value, CultureInfo.InvariantCulture);
-        long attachLen = long.Parse(imgMatch.Groups[6].Value, CultureInfo.InvariantCulture);
+        var imageTag = imageTagMatch.Value;
+
+        var geometry = GetRequiredXisfAttribute(imageTag, "geometry", path);
+        var sampleFormat = GetRequiredXisfAttribute(imageTag, "sampleFormat", path);
+        var location = GetRequiredXisfAttribute(imageTag, "location", path);
+        var compression = GetOptionalXisfAttribute(imageTag, "compression");
+
+        var geometryParts = geometry.Split(':', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (geometryParts.Length < 2)
+            throw new InvalidDataException($"Invalid XISF geometry '{geometry}' in {path}");
+
+        int width = int.Parse(geometryParts[0], CultureInfo.InvariantCulture);
+        int height = int.Parse(geometryParts[1], CultureInfo.InvariantCulture);
+        int channels = geometryParts.Length >= 3
+            ? int.Parse(geometryParts[2], CultureInfo.InvariantCulture)
+            : 1;
+
+        var (attachOffset, attachLen) = ParseXisfAttachmentLocation(location, path);
 
         int bytesPerSample = sampleFormat.ToLowerInvariant() switch
         {
@@ -188,8 +195,16 @@ public sealed class FitsImageIO
         fs.Seek(attachOffset, SeekOrigin.Begin);
 
         long pixelCount = (long)width * height * channels;
-        var rawBuf = new byte[pixelCount * bytesPerSample];
-        await ReadExactAsync(fs, rawBuf, ct);
+        var attachmentBytes = new byte[attachLen];
+        var attachmentRead = await ReadExactAsync(fs, attachmentBytes, ct);
+        if (attachmentRead < attachLen)
+            throw new InvalidDataException($"Truncated XISF attachment in {path}: expected {attachLen} bytes, got {attachmentRead}.");
+
+        var expectedPixelBytes = checked(pixelCount * bytesPerSample);
+        var rawBuf = DecodeXisfAttachment(attachmentBytes, compression, expectedPixelBytes, path);
+        if (rawBuf.LongLength != expectedPixelBytes)
+            throw new InvalidDataException(
+                $"Decoded XISF attachment size mismatch in {path}: expected {expectedPixelBytes} bytes, got {rawBuf.LongLength}.");
 
         var pixels = new double[pixelCount];
         DecodeXisfPixels(rawBuf, pixels, sampleFormat);
@@ -204,20 +219,145 @@ public sealed class FitsImageIO
         };
     }
 
+    private static string GetRequiredXisfAttribute(string imageTag, string attributeName, string path)
+    {
+        var value = GetOptionalXisfAttribute(imageTag, attributeName);
+        if (!string.IsNullOrWhiteSpace(value))
+            return value;
+
+        throw new InvalidDataException($"Missing XISF Image attribute '{attributeName}' in {path}");
+    }
+
+    private static string? GetOptionalXisfAttribute(string imageTag, string attributeName)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(
+            imageTag,
+            $@"\b{System.Text.RegularExpressions.Regex.Escape(attributeName)}=""([^""]*)""",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    private static (long Offset, long Length) ParseXisfAttachmentLocation(string location, string path)
+    {
+        if (!location.StartsWith("attachment:", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"Unsupported XISF location '{location}' in {path}");
+
+        var locationParts = location.Split(':', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (locationParts.Length < 3)
+            throw new InvalidDataException($"Invalid XISF attachment location '{location}' in {path}");
+
+        var offset = long.Parse(locationParts[1], CultureInfo.InvariantCulture);
+        var length = long.Parse(locationParts[2], CultureInfo.InvariantCulture);
+        return (offset, length);
+    }
+
+    private static byte[] DecodeXisfAttachment(byte[] attachmentBytes, string? compressionAttr, long expectedPixelBytes, string path)
+    {
+        if (string.IsNullOrWhiteSpace(compressionAttr))
+            return attachmentBytes;
+
+        var parts = compressionAttr.Split(':', StringSplitOptions.TrimEntries);
+        if (parts.Length < 2)
+            throw new InvalidDataException($"Invalid XISF compression attribute '{compressionAttr}' in {path}");
+
+        var codecSpec = parts[0];
+        var uncompressedSize = long.Parse(parts[1], CultureInfo.InvariantCulture);
+        var itemSize = parts.Length >= 3
+            ? int.Parse(parts[2], CultureInfo.InvariantCulture)
+            : 0;
+
+        var codecParts = codecSpec.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (codecParts.Length == 0)
+            throw new InvalidDataException($"Invalid XISF compression codec '{compressionAttr}' in {path}");
+
+        var codec = codecParts[0].ToLowerInvariant();
+        var hasByteShuffle = false;
+        for (int i = 1; i < codecParts.Length; i++)
+        {
+            if (string.Equals(codecParts[i], "sh", StringComparison.OrdinalIgnoreCase))
+            {
+                hasByteShuffle = true;
+                break;
+            }
+        }
+
+        var decompressed = codec switch
+        {
+            "zlib" => DecompressWithZlib(attachmentBytes, uncompressedSize, path),
+            _ => throw new NotSupportedException($"Unsupported XISF compression codec '{codec}' in {path}")
+        };
+
+        if (hasByteShuffle)
+        {
+            if (itemSize <= 0)
+                throw new InvalidDataException($"Invalid XISF byte-shuffle item size in '{compressionAttr}' ({path})");
+            decompressed = UnshuffleBytes(decompressed, itemSize, path);
+        }
+
+        if (decompressed.LongLength != expectedPixelBytes)
+            throw new InvalidDataException(
+                $"Decoded XISF attachment size mismatch in {path}: expected {expectedPixelBytes}, got {decompressed.LongLength}.");
+
+        return decompressed;
+    }
+
+    private static byte[] DecompressWithZlib(byte[] compressedBytes, long expectedSize, string path)
+    {
+        using var src = new MemoryStream(compressedBytes);
+        using var zlib = new ZLibStream(src, CompressionMode.Decompress);
+        using var dst = expectedSize > 0 && expectedSize <= int.MaxValue
+            ? new MemoryStream((int)expectedSize)
+            : new MemoryStream();
+
+        zlib.CopyTo(dst);
+        var decompressed = dst.ToArray();
+        if (expectedSize > 0 && decompressed.LongLength != expectedSize)
+            throw new InvalidDataException(
+                $"XISF zlib decompression size mismatch in {path}: expected {expectedSize}, got {decompressed.LongLength}.");
+
+        return decompressed;
+    }
+
+    private static byte[] UnshuffleBytes(byte[] shuffled, int itemSize, string path)
+    {
+        if (itemSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(itemSize));
+        if (shuffled.Length % itemSize != 0)
+            throw new InvalidDataException(
+                $"XISF byte-shuffle payload size {shuffled.Length} is not divisible by item size {itemSize} in {path}.");
+
+        int itemCount = shuffled.Length / itemSize;
+        var output = new byte[shuffled.Length];
+
+        for (int b = 0; b < itemSize; b++)
+        {
+            int srcBase = b * itemCount;
+            for (int i = 0; i < itemCount; i++)
+                output[i * itemSize + b] = shuffled[srcBase + i];
+        }
+
+        return output;
+    }
+
     // ───────────────────── XISF Writing ─────────────────────
 
-    public async Task WriteXisfAsync(string path, ImageData image, CancellationToken ct = default)
+    public static async Task WriteXisfAsync(string path, ImageData image, CancellationToken ct = default)
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-        int channels = image.Channels;
+        int channels = Math.Max(1, image.Channels);
+        string colorSpace = channels > 1 ? "RGB" : "Gray";
 
         // Build XML header — two-pass: first build XML to measure size, then fix attachment offset
         long pixelCount = (long)image.Width * image.Height * channels;
-        long dataBytes = pixelCount * 4; // Float32
+        long dataBytes = pixelCount * 8; // Float64
+        // Keep PixInsight "Normalized Real [0,1]" statistics consistent with PI-generated masters.
+        // PI commonly writes master outputs with fixed bounds 0:1.
+        const string bounds = "0:1";
 
-        var geom = channels > 1 ? $"{image.Width}:{image.Height}:{channels}" : $"{image.Width}:{image.Height}";
+        // PixInsight expects explicit channel dimension even for mono images.
+        var geom = $"{image.Width}:{image.Height}:{channels}";
 
         // We need the final header block size to compute the absolute attachment offset.
         // Build a template, measure, round up to 4096, then rebuild with correct offset.
@@ -226,8 +366,8 @@ public sealed class FitsImageIO
             var sb2 = new StringBuilder();
             sb2.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
             sb2.Append("<xisf version=\"1.0\" xmlns=\"http://www.pixinsight.com/xisf\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">");
-            sb2.Append($"<Image geometry=\"{geom}\" sampleFormat=\"Float32\" " +
-                      $"colorSpace=\"Gray\" location=\"attachment:{attachmentOffset}:{dataBytes}\">");
+            sb2.Append($"<Image geometry=\"{geom}\" sampleFormat=\"Float64\" bounds=\"{bounds}\" " +
+                      $"colorSpace=\"{colorSpace}\" location=\"attachment:{attachmentOffset}:{dataBytes}\">");
 
             foreach (var kvp in image.Headers)
             {
@@ -274,19 +414,18 @@ public sealed class FitsImageIO
         // Header
         await fs.WriteAsync(paddedHeader, ct);
 
-        // Pixel data as Float32 LE
+        // Pixel data as Float64 LE
         var dataBuf = new byte[dataBytes];
         for (long i = 0; i < pixelCount; i++)
         {
-            float val = (float)image.Pixels[i];
-            BinaryPrimitives.WriteSingleLittleEndian(dataBuf.AsSpan((int)(i * 4)), val);
+            BinaryPrimitives.WriteDoubleLittleEndian(dataBuf.AsSpan((int)(i * 8)), image.Pixels[i]);
         }
         await fs.WriteAsync(dataBuf, ct);
     }
 
     // ───────────────────── FITS Writing ─────────────────────
 
-    public async Task WriteFitsAsync(string path, ImageData image, CancellationToken ct = default)
+    public static async Task WriteFitsAsync(string path, ImageData image, CancellationToken ct = default)
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -447,5 +586,8 @@ public sealed class FitsImageIO
         }
         return totalRead;
     }
+
+    [GeneratedRegex(@"<FITSKeyword\s+(?:name|keyword)=""([^""]+)""\s+value=""([^""]*)""", RegexOptions.IgnoreCase | RegexOptions.Compiled, "nb-NO")]
+    private static partial Regex MyRegex();
 }
 

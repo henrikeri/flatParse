@@ -29,7 +29,7 @@ public interface IFileScannerService
         IEnumerable<string> baseRoots,
         IProgress<ScanProgress>? progress = null,
         CancellationToken cancellationToken = default);
-    
+
     /// <summary>
     /// Scan directories recursively for dark frames
     /// </summary>
@@ -37,7 +37,7 @@ public interface IFileScannerService
         IEnumerable<string> darkRoots,
         IProgress<ScanProgress>? progress = null,
         CancellationToken cancellationToken = default);
-    
+
     /// <summary>
     /// Find all image files in a directory (non-recursive)
     /// </summary>

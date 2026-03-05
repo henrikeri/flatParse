@@ -16,6 +16,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using FlatMaster.WPF.ViewModels;
 
@@ -23,6 +24,9 @@ namespace FlatMaster.WPF.Views;
 
 public partial class MainWindow : Window
 {
+    private const string LicenseResourceName = "FlatMaster.WPF.LICENSE.txt";
+    private const string ThirdPartyResourceName = "FlatMaster.WPF.THIRD-PARTY-NOTICES.txt";
+
     public MainWindow(MainViewModel viewModel)
     {
         InitializeComponent();
@@ -31,27 +35,68 @@ public partial class MainWindow : Window
 
     private void OnLicensesClick(object sender, RoutedEventArgs e)
     {
-        var baseDir = AppContext.BaseDirectory;
-        var licensePath = Path.Combine(baseDir, "LICENSE");
-        var noticesPath = Path.Combine(baseDir, "THIRD-PARTY-NOTICES");
+        var licensePath = ExtractEmbeddedNoticeToTemp(LicenseResourceName, "LICENSE.txt")
+            ?? ResolveLooseNoticeFilePath("LICENSE");
+        var noticesPath = ExtractEmbeddedNoticeToTemp(ThirdPartyResourceName, "THIRD-PARTY-NOTICES.txt")
+            ?? ResolveLooseNoticeFilePath("THIRD-PARTY-NOTICES");
 
         var message = "This application is licensed under the GNU GPLv3.\n\n" +
-            "License file:\n" + licensePath + "\n\n" +
-            "Third-party notices:\n" + noticesPath + "\n\n" +
-            "Open these files?";
+            "Open license files now?";
         var result = MessageBox.Show(message, "Licenses", MessageBoxButton.OKCancel, MessageBoxImage.Information);
         if (result == MessageBoxResult.OK)
         {
-            OpenNoticeFile(licensePath);
-            OpenNoticeFile(noticesPath);
+            OpenNoticeFile(licensePath, "LICENSE");
+            OpenNoticeFile(noticesPath, "THIRD-PARTY-NOTICES");
         }
     }
 
-    private static void OpenNoticeFile(string path)
+    private static string? ExtractEmbeddedNoticeToTemp(string resourceName, string targetFileName)
     {
-        if (!File.Exists(path))
+        var assembly = Assembly.GetExecutingAssembly();
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        if (stream == null)
+            return null;
+
+        var tempDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "FlatMaster",
+            "Licenses");
+        Directory.CreateDirectory(tempDir);
+        var targetPath = Path.Combine(tempDir, targetFileName);
+
+        using var outStream = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+        stream.CopyTo(outStream);
+        return targetPath;
+    }
+
+    private static string? ResolveLooseNoticeFilePath(string fileName)
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var candidate = Path.Combine(baseDir, fileName);
+        if (File.Exists(candidate))
+            return candidate;
+
+        // Fallback for unusual launch layouts.
+        var parent = Directory.GetParent(baseDir)?.FullName;
+        if (!string.IsNullOrWhiteSpace(parent))
         {
-            MessageBox.Show($"File not found:\n{path}", "Licenses", MessageBoxButton.OK, MessageBoxImage.Warning);
+            candidate = Path.Combine(parent, fileName);
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static void OpenNoticeFile(string? path, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            MessageBox.Show(
+                $"Could not open {fileName} from embedded resources or local files.",
+                "Licenses",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 

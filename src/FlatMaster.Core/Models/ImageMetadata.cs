@@ -31,11 +31,11 @@ public sealed record ImageMetadata
     public double? Temperature { get; init; }
     public string? Filter { get; init; }
     public DateTime? ObservationDate { get; init; }
-    
+
     /// <summary>
     /// Format exposure time for consistent display (3 decimal places, strip trailing zeros)
     /// </summary>
-    public string ExposureKey => ExposureTime.HasValue 
+    public string ExposureKey => ExposureTime.HasValue
         ? Math.Round(ExposureTime.Value, 3).ToString("0.###", CultureInfo.InvariantCulture) + "s"
         : "Unknown";
 }

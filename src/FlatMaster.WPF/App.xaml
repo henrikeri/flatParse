@@ -12,6 +12,7 @@
             <!-- Converters -->
             <converters:InverseBooleanConverter x:Key="InverseBoolConverter"/>
             <converters:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVisConverter"/>
+            <converters:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVisibilityConverter"/>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

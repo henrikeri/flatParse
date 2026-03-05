@@ -29,7 +29,7 @@ public interface IDarkMatchingService
         ExposureGroup exposureGroup,
         IEnumerable<DarkFrame> darkCatalog,
         DarkMatchingOptions options);
-    
+
     /// <summary>
     /// Find best matching dark with detailed diagnostic information
     /// </summary>
@@ -46,8 +46,9 @@ public interface IDarkMatchingService
         IEnumerable<DirectoryJob> jobs,
         IEnumerable<DarkFrame> darkCatalog,
         DarkMatchingOptions options,
+        IProgress<MatchingProgress>? progress = null,
         CancellationToken cancellationToken = default);
-    
+
     /// <summary>
     /// Pre-validate dark catalog for common issues
     /// </summary>

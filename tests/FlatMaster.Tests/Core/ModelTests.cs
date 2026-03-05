@@ -91,7 +91,7 @@ public class ExposureGroupTests
         var group = new ExposureGroup
         {
             ExposureTime = 1.0,
-            FilePaths = new List<string> { "a.fits", "b.fits", "c.fits" }
+            FilePaths = ["a.fits", "b.fits", "c.fits"]
         };
 
         // Act & Assert

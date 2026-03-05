@@ -13,32 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-using System.Globalization;
-using System.Windows.Data;
+namespace FlatMaster.Core.Models;
 
-namespace FlatMaster.WPF.ViewModels;
-
-/// <summary>
-/// Converts boolean values to their inverse (true -> false, false -> true)
-/// </summary>
-public class InverseBoolConverter : IValueConverter
+public sealed record MatchingProgress
 {
-    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
-    {
-        if (value is bool boolValue)
-        {
-            return !boolValue;
-        }
-        return false;
-    }
-
-    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
-    {
-        if (value is bool boolValue)
-        {
-            return !boolValue;
-        }
-        return false;
-    }
+    public required int ProcessedFlats { get; init; }
+    public required int TotalFlats { get; init; }
 }
-

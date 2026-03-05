@@ -102,6 +102,12 @@ public sealed record ProcessingReport
     public double MaxTemperatureDelta { get; init; }
 
     /// <summary>
+    /// Min/max temperature of selected dark frames (when available)
+    /// </summary>
+    public double? MinSelectedDarkTemperatureC { get; init; }
+    public double? MaxSelectedDarkTemperatureC { get; init; }
+
+    /// <summary>
     /// PixInsight script path used
     /// </summary>
     public string? ScriptPath { get; init; }
@@ -114,16 +120,16 @@ public sealed record ProcessingReport
     /// <summary>
     /// Any errors that occurred
     /// </summary>
-    public List<string> Errors { get; init; } = new();
+    public List<string> Errors { get; init; } = [];
 
     /// <summary>
     /// Warnings about the processing
     /// </summary>
-    public List<string> Warnings { get; init; } = new();
+    public List<string> Warnings { get; init; } = [];
 
     /// <summary>
     /// Per-flat matching diagnostics
     /// </summary>
-    public List<MatchingDiagnostic> MatchingDiagnostics { get; init; } = new();
+    public List<MatchingDiagnostic> MatchingDiagnostics { get; init; } = [];
 }
 

@@ -81,6 +81,7 @@ public partial class App : Application
         var logPath = Path.Combine(Path.GetTempPath(), $"FlatMaster_detailed_{DateTime.Now:yyyyMMdd_HHmmss}.log");
         services.AddLogging(configure =>
         {
+            configure.AddConfiguration(Configuration.GetSection("Logging"));
             configure.AddConsole();
             configure.AddDebug();
             configure.AddSimpleConsole(options =>
@@ -88,10 +89,10 @@ public partial class App : Application
                 options.IncludeScopes = true;
                 options.TimestampFormat = "HH:mm:ss ";
             });
-            configure.AddFile(logPath, minimumLevel: LogLevel.Debug);
-            configure.SetMinimumLevel(LogLevel.Debug);
+            var fileLevel = Configuration.GetValue("Logging:FileMinimumLevel", LogLevel.Information);
+            configure.AddFile(logPath, minimumLevel: fileLevel);
         });
-        
+
         // Store log path for UI access
         Configuration["Runtime:DetailedLogPath"] = logPath;
 
@@ -109,10 +110,10 @@ public partial class App : Application
         services.AddSingleton<IMetadataReaderService, MetadataReaderService>();
         services.AddSingleton<IFileScannerService, FileScannerService>();
         services.AddSingleton<IDarkMatchingService, DarkMatchingService>();
+        services.AddSingleton<IMasterDarkMaterializer, MasterDarkMaterializer>();
         services.AddSingleton<IPixInsightService, PixInsightService>();
         services.AddSingleton<IImageProcessingEngine, NativeProcessingService>(); // Native Engine
         services.AddSingleton<IProcessingReportService, ProcessingReportService>();
-        services.AddSingleton<IOutputPathService, OutputPathService>();
 
         // ViewModels
         services.AddTransient<MainViewModel>();
@@ -168,16 +169,14 @@ public partial class App : Application
         var availableBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
         var availableGiB = availableBytes > 0 ? availableBytes / (1024.0 * 1024.0 * 1024.0) : 0.0;
 
-        var multiplier = availableGiB switch
+        // Defender-friendly default: avoid huge metadata open bursts that can stall scans.
+        var maxParallelism = availableGiB switch
         {
-            >= 96.0 => 8,
-            >= 64.0 => 6,
-            >= 32.0 => 4,
-            _ => 2
+            >= 96.0 => Math.Clamp(cores, 8, 32),
+            >= 64.0 => Math.Clamp(cores, 8, 24),
+            >= 32.0 => Math.Clamp(cores / 2, 8, 20),
+            _ => Math.Clamp(cores / 2, 6, 12)
         };
-
-        var maxParallelism = cores * multiplier;
-        maxParallelism = Math.Clamp(maxParallelism, 8, 256);
 
         settings["MetadataReader:MaxParallelism"] = maxParallelism.ToString();
         return settings;

@@ -26,7 +26,7 @@ public interface IPixInsightService
     /// Generate PJSR script for a (partial) processing plan.
     /// </summary>
     string GeneratePJSRScript(ProcessingPlan plan);
-    
+
     /// <summary>
     /// Process all jobs in batches, launching PixInsight once per batch.
     /// Runs a preflight test first, then iterates through batches.

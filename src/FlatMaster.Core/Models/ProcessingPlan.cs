@@ -20,15 +20,15 @@ namespace FlatMaster.Core.Models;
 /// </summary>
 public sealed class ProcessingPlan
 {
-    public required List<DirectoryJob> Jobs { get; init; } = new();
-    public required List<DarkFrame> DarkCatalog { get; init; } = new();
+    public required List<DirectoryJob> Jobs { get; init; } = [];
+    public required List<DarkFrame> DarkCatalog { get; init; } = [];
     public required ProcessingConfiguration Configuration { get; init; }
-    
+
     /// <summary>
     /// Get only selected jobs
     /// </summary>
     public IEnumerable<DirectoryJob> SelectedJobs => Jobs.Where(j => j.IsSelected);
-    
+
     /// <summary>
     /// Get only selected dark frames
     /// </summary>
@@ -41,6 +41,7 @@ public sealed class ProcessingPlan
 public sealed record ProcessingConfiguration
 {
     public required string PixInsightExecutable { get; init; }
+    public string OutputFileExtension { get; init; } = "xisf";
     public bool DeleteCalibratedFlats { get; init; } = true;
     public string CacheDirName { get; init; } = "_DarkMasters";
     public string CalibratedSubdirBase { get; init; } = "_CalibratedFlats";

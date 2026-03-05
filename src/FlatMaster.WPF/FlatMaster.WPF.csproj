@@ -9,10 +9,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>1.2.0</Version>
-    <AssemblyVersion>1.2.0.0</AssemblyVersion>
-    <FileVersion>1.2.0.0</FileVersion>
-    <InformationalVersion>1.2.0</InformationalVersion>
+    <Version>1.0.4</Version>
+    <AssemblyVersion>1.0.4.0</AssemblyVersion>
+    <FileVersion>1.0.4.0</FileVersion>
+    <InformationalVersion>1.0.4</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,12 +20,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\LICENSE" Link="LICENSE">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="..\..\THIRD-PARTY-NOTICES" Link="THIRD-PARTY-NOTICES">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    <EmbeddedResource Include="..\..\LICENSE" Link="LICENSE">
+      <LogicalName>FlatMaster.WPF.LICENSE.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\THIRD-PARTY-NOTICES" Link="THIRD-PARTY-NOTICES">
+      <LogicalName>FlatMaster.WPF.THIRD-PARTY-NOTICES.txt</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>
@@ -53,3 +53,4 @@
   </ItemGroup>
 
 </Project>
+

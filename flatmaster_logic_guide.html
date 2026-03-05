@@ -1,0 +1,259 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FlatMaster Logic Specification</title>
+  <style>
+    :root {
+      --bg: #0a0f1d;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #22d3ee;
+      --line: #334155;
+      --ok: #34d399;
+      --warn: #f59e0b;
+      --bad: #f87171;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: Segoe UI, Arial, sans-serif; }
+    .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 20px 44px; }
+    .hero { border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: linear-gradient(180deg,#090f1a 0%, #0a0f1d 100%); }
+    h1 { margin: 0; font-size: 32px; }
+    h2 { margin-top: 30px; font-size: 23px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+    h3 { margin-top: 20px; font-size: 18px; }
+    p { color: var(--text); }
+    .meta { color: var(--muted); font-size: 14px; margin-top: 8px; }
+    .toc { margin-top: 14px; display: grid; gap: 6px; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 12px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2,minmax(290px,1fr)); gap: 12px; }
+    pre { background: #020617; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+    code { background: #1e293b; border-radius: 4px; padding: 1px 5px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: var(--panel-2); }
+    ul, ol { margin-top: 8px; margin-bottom: 8px; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .bad { color: var(--bad); }
+    @media (max-width: 920px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      h1 { font-size: 26px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>FlatMaster Logic Specification</h1>
+      <div class="meta">Normative behavior specification for scanning, matching, materialization, and processing.</div>
+      <div class="meta">Version context: FlatMaster 1.2.x. Updated: 2026-02-27.</div>
+      <div class="toc">
+        <a href="#scan">1. Scan Logic</a>
+        <a href="#group">2. Exposure Grouping Logic</a>
+        <a href="#matching">3. Matching Logic (Priorities and Gates)</a>
+        <a href="#override">4. Manual Override Logic</a>
+        <a href="#materialization">5. Master Dark Materialization Logic</a>
+        <a href="#engine-native">6. Native Engine Logic</a>
+        <a href="#engine-pi">7. PixInsight Engine Logic</a>
+        <a href="#output">8. Output Naming and Format Logic</a>
+        <a href="#diagnostics">9. Diagnostics and Confidence Logic</a>
+      </div>
+    </section>
+
+    <h2 id="scan">1. Scan Logic</h2>
+    <div class="card">
+      <h3>1.1 Combined scan trigger</h3>
+      <ul>
+        <li>If dark-only mode is disabled, <code>ScanAll</code> requires at least one flat root and one dark root.</li>
+        <li>If roots are on different drives, flat and dark scans run in parallel; otherwise sequentially.</li>
+        <li>After both complete, matching auto-runs once per revision pair.</li>
+      </ul>
+
+      <h3>1.2 Directory traversal rules</h3>
+      <ul>
+        <li>Traversal is breadth-first with skip directory set: <code>_darkmasters</code>, <code>_calibratedflats</code>, <code>masters</code>, <code>_processed</code>, and dot-prefixed directories.</li>
+        <li>Supported image extensions: <code>.fit</code>, <code>.fits</code>, <code>.xisf</code>.</li>
+      </ul>
+
+      <h3>1.3 Dark library special handling</h3>
+      <ul>
+        <li>Pre-scan includes potential master dark files and manifest files even under skipped subtrees.</li>
+        <li>Any file under a nearest <code>DARKS###</code> or <code>DARK###</code> ancestor receives <code>DarkGroupFolder</code> reference.</li>
+        <li>Missing master temperatures can be backfilled from sibling darks with same binning using median donor temperature.</li>
+      </ul>
+    </div>
+
+    <h2 id="group">2. Exposure Grouping Logic</h2>
+    <div class="card">
+      <ol>
+        <li>Flat files are grouped by normalized exposure key.</li>
+        <li>Each group carries representative metadata, average flat temperature (<code>AverageTemperatureC</code>), and matching criteria snapshot.</li>
+        <li>Groups with fewer than 3 frames are marked invalid (<code>IsValid = false</code>).</li>
+      </ol>
+      <p><span class="ok">Important:</span> Group temperature in matching UI is the flat-group average temperature, not a single-file sample.</p>
+    </div>
+
+    <h2 id="matching">3. Matching Logic (Priorities and Gates)</h2>
+    <div class="card">
+      <h3>3.1 Exact/near definitions</h3>
+      <ul>
+        <li>Exact exposure tolerance: absolute delta &lt; 0.001 s.</li>
+        <li>Near-2s band: (0.001, 2.0] s.</li>
+        <li>Near-10s band: (2.0, 10.0] s.</li>
+      </ul>
+
+      <h3>3.2 Priority waterfall</h3>
+      <table>
+        <thead>
+          <tr><th>Priority</th><th>Candidate type</th><th>Exposure rule</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>P1</td><td>MasterDarkFlat or MasterDark</td><td>Exact</td></tr>
+          <tr><td>P2</td><td>DarkFlat or Dark</td><td>Exact</td></tr>
+          <tr><td>P3</td><td>MasterDarkFlat or MasterDark</td><td>Near-2s</td></tr>
+          <tr><td>P4</td><td>DarkFlat or Dark</td><td>Near-2s</td></tr>
+          <tr><td>P5</td><td>MasterDarkFlat or MasterDark</td><td>Near-10s</td></tr>
+          <tr><td>P6</td><td>DarkFlat or Dark</td><td>Near-10s</td></tr>
+          <tr><td>P7</td><td>MasterBias, then Bias</td><td>Fallback</td></tr>
+          <tr><td>P8</td><td>None</td><td>No suitable candidate</td></tr>
+        </tbody>
+      </table>
+
+      <h3>3.3 Temperature and bias guard semantics</h3>
+      <ol>
+        <li>Strict pass filters dark candidates by <code>MaxTempDeltaC</code> if both temperatures exist.</li>
+        <li>If strict pass fails, relaxed pass can still choose a dark before bias if thresholds allow.
+          <ul>
+            <li>Dark-over-bias temperature threshold: <code>DarkOverBiasTempDeltaC</code></li>
+            <li>Dark-over-bias exposure threshold: <code>DarkOverBiasExposureDeltaSeconds</code></li>
+          </ul>
+        </li>
+        <li>Selection condition is <code>delta &lt;= threshold</code> for both dimensions when threshold is enabled and data exists.</li>
+      </ol>
+
+      <h3>3.4 Candidate scoring and tie-breaking</h3>
+      <p>Per-candidate match score is based on binning, gain, offset, and temperature proximity contributions. Final deterministic order:</p>
+      <ol>
+        <li>Higher score first</li>
+        <li>Type priority (master before loose, bias later)</li>
+        <li>File path lexical order</li>
+      </ol>
+    </div>
+
+    <h2 id="override">4. Manual Override Logic</h2>
+    <div class="card">
+      <ul>
+        <li>Each group row offers override options: Auto, explicit master candidates, and loose-dark group representatives.</li>
+        <li>Override stores <code>ManualDarkPath</code> in group matching criteria when processing starts.</li>
+        <li>If override path is present in catalog, matching returns it immediately with reason prefix <code>Override</code>.</li>
+      </ul>
+    </div>
+
+    <h2 id="materialization">5. Master Dark Materialization Logic</h2>
+    <div class="card">
+      <h3>5.1 Normal processing pre-stage</h3>
+      <ol>
+        <li>Detect flat groups that selected loose darks (P2/P4/P6 classes).</li>
+        <li>Map each candidate to top-level <code>DARKS###</code> folder.</li>
+        <li>Treat all files under that top-level folder as one source pool, ignoring deeper taxonomy names.</li>
+        <li>Build or reuse a single master dark per required source folder.</li>
+      </ol>
+
+      <h3>5.2 Darks-only mode</h3>
+      <ol>
+        <li>Select raw darks only (<code>Dark</code>/<code>DarkFlat</code>).</li>
+        <li>Group by rounded exposure (0.001s), binning, and rounded gain (0.001).</li>
+        <li>Within each group, temperature-aware clustering with configurable tolerance (default 1.0 degC).</li>
+      </ol>
+
+      <h3>5.3 Reuse logic</h3>
+      <ul>
+        <li>Master can be reused if file + manifest exist and key hash/pipeline/source timestamps are consistent.</li>
+        <li>Pipeline version is enforced to invalidate stale products after algorithmic changes.</li>
+      </ul>
+    </div>
+
+    <h2 id="engine-native">6. Native Engine Logic</h2>
+    <div class="card">
+      <h3>6.1 Group processing pipeline</h3>
+      <ol>
+        <li>Resolve best dark for group.</li>
+        <li>Load selected dark or bias frame once.</li>
+        <li>Load flat frames in parallel and subtract dark/bias per pixel.</li>
+        <li>Per-frame multiplicative normalization by exact median.</li>
+        <li>Compute EqualizeFluxes factors for rejection stage.</li>
+        <li>Integrate with stack-size-specific rejection strategy.</li>
+        <li>Rescale by reference median and write output file.</li>
+      </ol>
+
+      <h3>6.2 Rejection strategy by frame count</h3>
+      <table>
+        <thead>
+          <tr><th>Frame count</th><th>Algorithm</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>&lt; 3</td><td>Average</td></tr>
+          <tr><td>3-5</td><td>Percentile clip (low 0.20, high 0.10)</td></tr>
+          <tr><td>6-15</td><td>Winsorized sigma clip</td></tr>
+          <tr><td>&gt; 15</td><td>Linear-fit clipping</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="engine-pi">7. PixInsight Engine Logic</h2>
+    <div class="card">
+      <h3>7.1 Template split</h3>
+      <ul>
+        <li><code>PixInsightTemplate.pjsr</code>: flat calibration + integration workflow.</li>
+        <li><code>PixInsightTemplate.DARKS.pjsr</code>: dark integration-only workflow.</li>
+      </ul>
+
+      <h3>7.2 Invocation model</h3>
+      <ul>
+        <li>One folder per invocation is enforced for stability and progress fidelity.</li>
+        <li>Generated scripts are written to temp and executed with automation-mode launch flags.</li>
+        <li>Sentinel files are used as completion contract in detached execution scenarios.</li>
+      </ul>
+
+      <h3>7.3 Calibration rules</h3>
+      <ul>
+        <li>Flat template may run <code>ImageCalibration</code> for flats.</li>
+        <li>Dark template does not run <code>ImageCalibration</code>; it only integrates dark frames.</li>
+      </ul>
+    </div>
+
+    <h2 id="output">8. Output Naming and Format Logic</h2>
+    <div class="card">
+      <h3>8.1 Format selector</h3>
+      <ul>
+        <li>Output format can be <code>XISF</code> or <code>FITS</code>.</li>
+        <li>Effective extension in runtime config is normalized to <code>xisf</code> or <code>fits</code>.</li>
+      </ul>
+
+      <h3>8.2 Path conventions</h3>
+      <ul>
+        <li>Master darks: <code>OutputRoot/Master/Darks/&lt;seconds&gt;s/&lt;temp&gt;degC/MasterDark_...&lt;ext&gt;</code></li>
+        <li>Native master flats: <code>MasterFlat_&lt;date&gt;_&lt;filter&gt;_Bin&lt;bin&gt;_&lt;exp&gt;s.&lt;ext&gt;</code></li>
+        <li>PixInsight master flats: <code>MasterFlat_&lt;date&gt;_&lt;filter&gt;_&lt;exp&gt;s.&lt;ext&gt;</code></li>
+      </ul>
+      <p class="warn">Engine-specific naming differences are intentional in current implementation.</p>
+    </div>
+
+    <h2 id="diagnostics">9. Diagnostics and Confidence Logic</h2>
+    <div class="card">
+      <ul>
+        <li>Matching diagnostics are generated per flat file, then grouped for UI display.</li>
+        <li>Group-level temperature delta is computed against group average flat temperature.</li>
+        <li>For raw-dark priorities (P2/P4/P6), dark temperature display can use average of matched raw-dark set in same top-level dark folder and exposure.</li>
+        <li>Confidence display is percentage based on average candidate score for the group.</li>
+      </ul>
+      <p class="bad">If diagnostics look inconsistent, inspect reason strings, selected dark path, and group average temperature source first.</p>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,4 +1,4 @@
-// Copyright (C) 2026 Henrik E. Riise
+﻿// Copyright (C) 2026 Henrik E. Riise
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -23,16 +23,11 @@ using Microsoft.Extensions.Logging;
 namespace FlatMaster.Infrastructure.Services;
 
 /// <summary>
-/// Generates and formats processing reports
+/// Generates and formats processing reports.
 /// </summary>
-public sealed class ProcessingReportService : IProcessingReportService
+public sealed class ProcessingReportService(ILogger<ProcessingReportService> logger) : IProcessingReportService
 {
-    private readonly ILogger<ProcessingReportService> _logger;
-
-    public ProcessingReportService(ILogger<ProcessingReportService> logger)
-    {
-        _logger = logger;
-    }
+    private readonly ILogger<ProcessingReportService> _logger = logger;
 
     public ProcessingReport GenerateReport(
         DateTime startTime,
@@ -42,7 +37,8 @@ public sealed class ProcessingReportService : IProcessingReportService
         OutputPathConfiguration outputConfig)
     {
         var diagnosticList = matchingDiagnostics.ToList();
-        var darkList = darkCatalog.ToList();
+        var (calibratedBytes, darkMasterBytes, masterCalibrationBytes) =
+            ComputeGeneratedStorageBytes(outputConfig.OutputRootPath, config, startTime);
 
         var succeeded = diagnosticList.Count(d =>
             d.SelectedDark != null ||
@@ -52,6 +48,12 @@ public sealed class ProcessingReportService : IProcessingReportService
         var tempDeltas = diagnosticList
             .Where(d => d.TemperatureDeltaC.HasValue)
             .Select(d => d.TemperatureDeltaC!.Value)
+            .ToList();
+
+        var selectedDarkTemps = diagnosticList
+            .Select(d => d.SelectedDark?.Temperature)
+            .Where(t => t.HasValue)
+            .Select(t => t!.Value)
             .ToList();
 
         var exposureGroups = diagnosticList
@@ -74,10 +76,15 @@ public sealed class ProcessingReportService : IProcessingReportService
             FlatsFailed = failed,
             UniqueExposureGroups = exposureGroups,
             UniqueDarkMastersCreated = uniqueDarks,
-            DarkMasterCacheHits = 0, // Will be populated by pixel insight service
-            AverageTemperatureDelta = tempDeltas.Any() ? tempDeltas.Average() : 0,
-            MinTemperatureDelta = tempDeltas.Any() ? tempDeltas.Min() : 0,
-            MaxTemperatureDelta = tempDeltas.Any() ? tempDeltas.Max() : 0,
+            DarkMasterCacheHits = 0,
+            CalibratedFlatsBytes = calibratedBytes,
+            DarkMastersBytes = darkMasterBytes,
+            MasterCalibrationBytes = masterCalibrationBytes,
+            AverageTemperatureDelta = tempDeltas.Count > 0 ? tempDeltas.Average() : 0,
+            MinTemperatureDelta = tempDeltas.Count > 0 ? tempDeltas.Min() : 0,
+            MaxTemperatureDelta = tempDeltas.Count > 0 ? tempDeltas.Max() : 0,
+            MinSelectedDarkTemperatureC = selectedDarkTemps.Count > 0 ? selectedDarkTemps.Min() : null,
+            MaxSelectedDarkTemperatureC = selectedDarkTemps.Count > 0 ? selectedDarkTemps.Max() : null,
             OutputRootDirectory = outputConfig.OutputRootPath,
             ReplicatedOutputTree = outputConfig.Mode == OutputMode.ReplicatedSeparateTree,
             MatchingDiagnostics = diagnosticList
@@ -88,79 +95,75 @@ public sealed class ProcessingReportService : IProcessingReportService
     {
         var sb = new StringBuilder();
 
-        sb.AppendLine("╔════════════════════════════════════════════════════════════════╗");
-        sb.AppendLine("║           FLATMASTER PROCESSING REPORT                         ║");
-        sb.AppendLine("╚════════════════════════════════════════════════════════════════╝");
+        sb.AppendLine("FLATMASTER PROCESSING REPORT");
+        sb.AppendLine(new string('=', 65));
         sb.AppendLine();
 
-        // Summary Section
-        sb.AppendLine("📊 PROCESSING SUMMARY");
-        sb.AppendLine("─────────────────────────────────────────────────────────────────");
+        sb.AppendLine("PROCESSING SUMMARY");
+        sb.AppendLine(new string('-', 65));
         sb.AppendLine($"  Start Time:           {report.StartTime:yyyy-MM-dd HH:mm:ss UTC}");
         sb.AppendLine($"  End Time:             {report.EndTime:yyyy-MM-dd HH:mm:ss UTC}");
         sb.AppendLine($"  Duration:             {report.TotalDuration?.ToString(@"hh\:mm\:ss") ?? "N/A"}");
         sb.AppendLine();
 
-        // Files Processed
-        sb.AppendLine("📁 FILES PROCESSED");
-        sb.AppendLine("─────────────────────────────────────────────────────────────────");
+        sb.AppendLine("FILES PROCESSED");
+        sb.AppendLine(new string('-', 65));
         sb.AppendLine($"  Total Flats:          {report.TotalFlatsProcessed}");
-        sb.AppendLine($"  ✓ Succeeded:          {report.FlatsSucceeded}");
-        sb.AppendLine($"  ✗ Failed:             {report.FlatsFailed}");
-        sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  Success Rate:         {0:F1}%", report.TotalFlatsProcessed > 0 ? (report.FlatsSucceeded * 100.0 / report.TotalFlatsProcessed) : 0));
+        sb.AppendLine($"  Succeeded:            {report.FlatsSucceeded}");
+        sb.AppendLine($"  Failed:               {report.FlatsFailed}");
+        sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+            "  Success Rate:         {0:F1}%",
+            report.TotalFlatsProcessed > 0 ? (report.FlatsSucceeded * 100.0 / report.TotalFlatsProcessed) : 0));
         sb.AppendLine();
 
-        // Dark Frame Matching
-        sb.AppendLine("🌑 DARK FRAME MATCHING");
-        sb.AppendLine("─────────────────────────────────────────────────────────────────");
+        sb.AppendLine("DARK FRAME MATCHING");
+        sb.AppendLine(new string('-', 65));
         sb.AppendLine($"  Unique Exposures:     {report.UniqueExposureGroups}");
         sb.AppendLine($"  Dark Masters Used:    {report.UniqueDarkMastersCreated}");
         sb.AppendLine($"  Cache Hits:           {report.DarkMasterCacheHits}");
-        sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  Avg Temp Delta:       {0:F2}°C", report.AverageTemperatureDelta));
-        sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  Temp Range:           {0:F2}°C to {1:F2}°C", report.MinTemperatureDelta, report.MaxTemperatureDelta));
+        sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  Avg Temp Delta:       {0:F2} degC", report.AverageTemperatureDelta));
+        sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  Temp Delta Range:     {0:F2} degC to {1:F2} degC", report.MinTemperatureDelta, report.MaxTemperatureDelta));
+        if (report.MinSelectedDarkTemperatureC.HasValue && report.MaxSelectedDarkTemperatureC.HasValue)
+        {
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "  Matched Dark Temp:    {0:F2} degC to {1:F2} degC",
+                report.MinSelectedDarkTemperatureC.Value,
+                report.MaxSelectedDarkTemperatureC.Value));
+        }
         sb.AppendLine();
 
-        // Output Configuration
-        sb.AppendLine("💾 OUTPUT CONFIGURATION");
-        sb.AppendLine("─────────────────────────────────────────────────────────────────");
+        sb.AppendLine("OUTPUT CONFIGURATION");
+        sb.AppendLine(new string('-', 65));
         sb.AppendLine($"  Mode:                 {(report.ReplicatedOutputTree ? "Replicated Separate Tree" : "Inline in Source")}");
         sb.AppendLine($"  Root Directory:       {report.OutputRootDirectory}");
         sb.AppendLine();
 
-        // Storage Statistics
-        sb.AppendLine("📦 STORAGE USAGE");
-        sb.AppendLine("─────────────────────────────────────────────────────────────────");
+        sb.AppendLine("STORAGE USAGE");
+        sb.AppendLine(new string('-', 65));
         sb.AppendLine($"  Calibrated Flats:     {FormatBytes(report.CalibratedFlatsBytes)}");
         sb.AppendLine($"  Dark Masters:         {FormatBytes(report.DarkMastersBytes)}");
         sb.AppendLine($"  Master Calibration:   {FormatBytes(report.MasterCalibrationBytes)}");
         sb.AppendLine($"  Total Generated:      {FormatBytes(report.CalibratedFlatsBytes + report.DarkMastersBytes + report.MasterCalibrationBytes)}");
         sb.AppendLine();
 
-        // Warnings/Errors
         if (report.Warnings.Count > 0)
         {
-            sb.AppendLine("⚠️  WARNINGS");
-            sb.AppendLine("─────────────────────────────────────────────────────────────────");
+            sb.AppendLine("WARNINGS");
+            sb.AppendLine(new string('-', 65));
             foreach (var warning in report.Warnings)
-            {
-                sb.AppendLine($"  • {warning}");
-            }
+                sb.AppendLine($"  - {warning}");
             sb.AppendLine();
         }
 
         if (report.Errors.Count > 0)
         {
-            sb.AppendLine("❌ ERRORS");
-            sb.AppendLine("─────────────────────────────────────────────────────────────────");
+            sb.AppendLine("ERRORS");
+            sb.AppendLine(new string('-', 65));
             foreach (var error in report.Errors)
-            {
-                sb.AppendLine($"  • {error}");
-            }
+                sb.AppendLine($"  - {error}");
             sb.AppendLine();
         }
 
-        sb.AppendLine("═══════════════════════════════════════════════════════════════════");
-
+        sb.AppendLine(new string('=', 65));
         return sb.ToString();
     }
 
@@ -193,5 +196,73 @@ public sealed class ProcessingReportService : IProcessingReportService
             return (bytes / (double)kb).ToString("F2", CultureInfo.InvariantCulture) + " KB";
         return $"{bytes} B";
     }
-}
 
+    private static (long Calibrated, long DarkMasters, long MasterCalibration) ComputeGeneratedStorageBytes(
+        string outputRootPath,
+        ProcessingConfiguration config,
+        DateTime runStartUtc)
+    {
+        if (string.IsNullOrWhiteSpace(outputRootPath) || !Directory.Exists(outputRootPath))
+            return (0, 0, 0);
+
+        long calibrated = 0;
+        long darkMasters = 0;
+        long masterCalibration = 0;
+        var cutoffUtc = runStartUtc.AddSeconds(-2);
+        var normalizedCalibratedMarker = "/" + (config.CalibratedSubdirBase ?? "_CalibratedFlats");
+        var normalizedMasterSubdir = "/" + (config.MasterSubdirName ?? "Masters") + "/";
+
+        foreach (var filePath in Directory.EnumerateFiles(outputRootPath, "*.*", SearchOption.AllDirectories))
+        {
+            if (!IsImageFile(filePath))
+                continue;
+
+            DateTime lastWriteUtc;
+            long length;
+            try
+            {
+                var fi = new FileInfo(filePath);
+                lastWriteUtc = fi.LastWriteTimeUtc;
+                length = fi.Length;
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (lastWriteUtc < cutoffUtc)
+                continue;
+
+            var normalizedPath = filePath.Replace('\\', '/');
+            var fileName = Path.GetFileName(filePath);
+            if (normalizedPath.Contains("/Master/Darks/", StringComparison.OrdinalIgnoreCase)
+                || fileName.Contains("MasterDark", StringComparison.OrdinalIgnoreCase))
+            {
+                darkMasters += length;
+                continue;
+            }
+
+            if (normalizedPath.Contains(normalizedCalibratedMarker, StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("cal_", StringComparison.OrdinalIgnoreCase))
+            {
+                calibrated += length;
+                continue;
+            }
+
+            if (normalizedPath.Contains(normalizedMasterSubdir, StringComparison.OrdinalIgnoreCase)
+                || fileName.Contains("MasterFlat", StringComparison.OrdinalIgnoreCase))
+            {
+                masterCalibration += length;
+            }
+        }
+
+        return (calibrated, darkMasters, masterCalibration);
+    }
+
+    private static bool IsImageFile(string filePath)
+    {
+        return filePath.EndsWith(".xisf", StringComparison.OrdinalIgnoreCase)
+            || filePath.EndsWith(".fit", StringComparison.OrdinalIgnoreCase)
+            || filePath.EndsWith(".fits", StringComparison.OrdinalIgnoreCase);
+    }
+}

@@ -26,14 +26,14 @@ public interface IMetadataReaderService
     /// Read metadata from a single file
     /// </summary>
     Task<ImageMetadata?> ReadMetadataAsync(string filePath, CancellationToken cancellationToken = default);
-    
+
     /// <summary>
     /// Read metadata from multiple files in parallel
     /// </summary>
     Task<Dictionary<string, ImageMetadata>> ReadMetadataBatchAsync(
-        IEnumerable<string> filePaths, 
+        IEnumerable<string> filePaths,
         CancellationToken cancellationToken = default);
-    
+
     /// <summary>
     /// Check if file format is supported (FITS, XISF)
     /// </summary>

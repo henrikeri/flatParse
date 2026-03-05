@@ -1,128 +1,239 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FlatMaster Developer Guide</title>
   <style>
-    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Fraunces:wght@400;600&display=swap");
     :root {
-      --bg-0: #0d1117; --bg-1: #161b22; --bg-2: #21262d;
-      --fg-0: #c9d1d9; --fg-1: #8b949e;
-      --accent: #58a6ff; --green: #3fb950; --purple: #bc8cff;
-      --border: #30363d;
+      --bg: #0b1020;
+      --panel: #111a33;
+      --panel-2: #17203e;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #22d3ee;
+      --line: #334155;
+      --ok: #34d399;
+      --warn: #fbbf24;
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0; font-family: "Space Grotesk", sans-serif;
-      color: var(--fg-0); background: var(--bg-0);
-      line-height: 1.6;
-    }
-    .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
-    
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: Segoe UI, Arial, sans-serif; }
+    .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 20px 44px; }
+    .hero { border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: linear-gradient(180deg,#0b1020 0%, #0d1327 100%); }
+    h1 { margin: 0; font-size: 32px; }
+    h2 { margin-top: 28px; font-size: 22px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+    h3 { margin-top: 20px; font-size: 18px; }
+    p { color: var(--text); }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
-
-    h1, h2, h3 { font-family: "Fraunces", serif; color: var(--fg-0); margin-top: 2.5rem; }
-    h1 { font-size: 3rem; margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 20px; }
-    h2 { font-size: 1.8rem; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
-    
-    code { font-family: "Consolas", monospace; background: rgba(110,118,129,0.4); padding: 0.2em 0.4em; border-radius: 6px; font-size: 85%; }
-    pre { background: var(--bg-1); padding: 16px; border-radius: 6px; overflow-x: auto; border: 1px solid var(--border); }
-    pre code { background: none; padding: 0; color: var(--fg-0); }
-    
-    .comment { color: var(--fg-1); font-style: italic; }
-    .keyword { color: var(--accent); }
-    .type { color: var(--purple); }
-    .string { color: #a5d6ff; }
-
-    .file-tree { font-family: monospace; color: var(--fg-1); }
-    .file-tree .dir { color: var(--accent); font-weight: bold; }
+    .meta { color: var(--muted); font-size: 14px; margin-top: 8px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 15px; margin-top: 12px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2,minmax(290px,1fr)); gap: 12px; }
+    pre { background: #020617; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+    code { background: #1e293b; border-radius: 4px; padding: 1px 5px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: var(--panel-2); }
+    ul, ol { margin-top: 8px; margin-bottom: 8px; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .toc { margin-top: 14px; display: grid; gap: 6px; }
+    @media (max-width: 900px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      h1 { font-size: 26px; }
+    }
   </style>
 </head>
 <body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>FlatMaster Developer Guide</h1>
+      <div class="meta">Applies to the current FlatMaster 1.2.x codebase. Updated: 2026-02-27.</div>
+      <div class="toc">
+        <a href="#env">1. Environment Setup</a>
+        <a href="#build">2. Build, Test, Run</a>
+        <a href="#layout">3. Solution Layout and Ownership</a>
+        <a href="#workflows">4. Core Development Workflows</a>
+        <a href="#logic">5. Logic-sensitive Areas</a>
+        <a href="#debug">6. Debugging and Observability</a>
+        <a href="#release">7. Release and Publishing</a>
+        <a href="#quality">8. Code Quality Gates</a>
+      </div>
+    </section>
 
-<div class="container">
-  <h1>FlatMaster Developer Guide</h1>
-  
-  <p>Technical documentation for the FlatMaster WPF application. This guide covers the solution architecture, dependency injection setup, and critical service implementations.</p>
+    <h2 id="env">1. Environment Setup</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Required tools</h3>
+        <ul>
+          <li>Windows 10 or 11</li>
+          <li>.NET SDK 8.x</li>
+          <li>Visual Studio 2022 (or VS Code + C# tooling)</li>
+          <li>PixInsight installed for PI engine test runs</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Recommended local setup</h3>
+        <ul>
+          <li>Keep source and dark libraries on SSD or separate physical volumes for scan throughput.</li>
+          <li>Use a dedicated output root for repeatable test runs (for example <code>D:\fmOutput</code>).</li>
+          <li>Pin PixInsight path in appsettings or via UI settings persistence.</li>
+        </ul>
+      </div>
+    </div>
 
-  <h2>1. Project Structure</h2>
-  <pre class="file-tree">
-<span class="dir">src/</span>
-├── <span class="dir">FlatMaster.Core/</span>            <span class="comment"># Domain models & Interfaces (No ext dependencies)</span>
-│   ├── Interfaces/           <span class="comment"># IFileScannerService, IPixInsightService, etc.</span>
-│   └── Models/               <span class="comment"># FlatFrame, DarkFrame, MatchingCriteria</span>
-├── <span class="dir">FlatMaster.Infrastructure/</span>  <span class="comment"># Implementation of core services</span>
-│   ├── Services/             <span class="comment"># File scanning, PJSR generation, Metadata parsing</span>
-│   └── Templates/            <span class="comment"># Embedded JavaScript templates for PixInsight</span>
-└── <span class="dir">FlatMaster.WPF/</span>             <span class="comment"># UI Layer (MVVM)</span>
-    ├── ViewModels/           <span class="comment"># MainViewModel handles all presentation logic</span>
-    ├── Views/                <span class="comment"># XAML Only</span>
-    └── App.xaml.cs           <span class="comment"># Composition Root (DI)</span>
-  </pre>
+    <h2 id="build">2. Build, Test, Run</h2>
+    <div class="card">
+      <h3>Restore/build/test</h3>
+      <pre><code>dotnet restore FlatMaster.sln
 
-  <h2>2. Dependency Injection</h2>
-  <p>The application uses <code>Microsoft.Extensions.DependencyInjection</code> configured in <code>App.xaml.cs</code>. All major services are registered as Singletons.</p>
-  
-  <h3>Service Registration</h3>
-  <pre><code><span class="keyword">private void</span> ConfigureServices(IServiceCollection services)
-{
-    <span class="comment">// Core Services</span>
-    services.AddSingleton&lt;<span class="type">IMetadataReaderService</span>, <span class="type">MetadataReaderService</span>&gt;();
-    services.AddSingleton&lt;<span class="type">IDarkMatchingService</span>, <span class="type">DarkMatchingService</span>&gt;();
-    services.AddSingleton&lt;<span class="type">IPixInsightService</span>, <span class="type">PixInsightService</span>&gt;();
+dotnet build FlatMaster.sln -c Debug
 
-    <span class="comment">// UI & Config</span>
-    services.AddSingleton(Configuration);
-    services.AddTransient&lt;<span class="type">MainViewModel</span>&gt;();
-}</code></pre>
+dotnet test FlatMaster.sln -c Debug</code></pre>
 
-  <h2>3. Key Subsystems</h2>
+      <h3>Run WPF app</h3>
+      <pre><code>dotnet run --project src/FlatMaster.WPF</code></pre>
 
-  <h3>Metadata Parsing</h3>
-  <p>The <code>MetadataReaderService</code> is responsible for extracting essential headers (EXPOSURE, GAIN, DATE-OBS) from FITS and XISF files. To improve performance, it caches results using <code>IMemoryCache</code>.</p>
+      <h3>Alternative helper script</h3>
+      <pre><code>.\build.ps1 -Run
+.\build.ps1 -Test -Run</code></pre>
+    </div>
 
-  <h3>Dark Matching Logic</h3>
-  <p>Located in <code>DarkMatchingService.cs</code>. It receives a <code>WalkingFlat</code> (a group of flat files) and a <code>DarkCatalog</code>, then walks a priority chain to find the best match.</p>
-  <pre><code><span class="keyword">public</span> DarkMatchResult? FindBestDark(...)
-{
-    <span class="comment">// 1. Exact Match: Master Dark Flat</span>
-    <span class="keyword">if</span> (TryFind(ImageType.MasterDarkFlat, exactExposure: <span class="keyword">true</span>, <span class="keyword">out</span> <span class="type">var</span> match)) 
-        <span class="keyword">return</span> match;
+    <h2 id="layout">3. Solution Layout and Ownership</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>Project</th><th>Responsibility</th><th>Do not place here</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>FlatMaster.Core</code></td>
+            <td>Interfaces and data contracts only</td>
+            <td>File I/O, process launch, framework-specific code</td>
+          </tr>
+          <tr>
+            <td><code>FlatMaster.Infrastructure</code></td>
+            <td>Scanner, metadata, matching, native math, PixInsight integration, reporting</td>
+            <td>UI element state and presentation concerns</td>
+          </tr>
+          <tr>
+            <td><code>FlatMaster.WPF</code></td>
+            <td>UI/VM orchestration, commands, progress state, user settings persistence</td>
+            <td>Low-level image math and direct format parsing</td>
+          </tr>
+          <tr>
+            <td><code>FlatMaster.Tests</code></td>
+            <td>Unit coverage for contracts, matching, pathing, service behavior</td>
+            <td>Ad hoc scripts or manual test artifacts</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
-    <span class="comment">// 2. Exact Match: Raw Dark Flats (>= 3 frames required)</span>
-    ...
+    <h2 id="workflows">4. Core Development Workflows</h2>
+    <div class="card">
+      <h3>4.1 Add or change UI setting</h3>
+      <ol>
+        <li>Add observable property in <code>MainViewModel.cs</code>.</li>
+        <li>Add binding in <code>MainWindow.xaml</code>.</li>
+        <li>Persist in <code>MainViewModel.Settings.cs</code> load/save paths.</li>
+        <li>Flow setting into <code>ProcessingConfiguration</code> if runtime behavior depends on it.</li>
+        <li>Add or update unit tests for downstream service behavior.</li>
+      </ol>
 
-    <span class="comment">// 5. Fallback: Nearest exposure (if optimization allowed)</span>
-    <span class="keyword">if</span> (options.AllowNearestExposureWithOptimize) { ... }
-}</code></pre>
+      <h3>4.2 Change matching behavior</h3>
+      <ol>
+        <li>Modify priority or gating in <code>DarkMatchingService</code>.</li>
+        <li>Update diagnostics text if reason strings changed.</li>
+        <li>Adjust corresponding tests in <code>DarkMatchingServiceTests</code>.</li>
+        <li>Re-run full tests and verify UI matching table values remain coherent.</li>
+      </ol>
 
-  <h3>PixInsight Script Generation</h3>
-  <p>We do not drive PixInsight via COM or IPC. Instead, we generate a self-contained <strong>PJSR (PixInsight JavaScript Runtime)</strong> script.</p>
-  <ol>
-    <li><code>PixInsightService</code> serializes the processing plan (file paths, options) into a JSON string.</li>
-    <li>This JSON is injected into a template string (<code>%CONFIG_JSON_HERE%</code>).</li>
-    <li>The script is saved to a temp file.</li>
-    <li>PixInsight is invoked: <code>PixInsight.exe --run="script.js" --force-exit</code></li>
-  </ol>
+      <h3>4.3 Change materialization behavior</h3>
+      <ol>
+        <li>Modify <code>MasterDarkMaterializer</code> and <code>MasterDarkPathing</code>.</li>
+        <li>Preserve deterministic naming and output-root-only writes.</li>
+        <li>Validate both native and PixInsight branches.</li>
+      </ol>
 
-  <h2>4. Debugging & Logging</h2>
-  <p>Logs are critical for diagnosing matching failures.</p>
-  <ul>
-    <li><strong>Console:</strong> Standard output shows succinct progress.</li>
-    <li><strong>File:</strong> Detailed logs are written to <code>%TEMP%\FlatMaster_detailed_{timestamp}.log</code>.</li>
-    <li><strong>PixInsight Output:</strong> Captured via stdout/stderr redirection and piped to the UI log window.</li>
-  </ul>
+      <h3>4.4 Change processing algorithms</h3>
+      <ol>
+        <li>Native path: <code>NativeProcessingService</code> + <code>ImageStackingAlgorithms</code>.</li>
+        <li>PixInsight path: <code>PixInsightTemplate.pjsr</code> and/or <code>PixInsightTemplate.DARKS.pjsr</code>.</li>
+        <li>Keep native and PI branches behaviorally aligned where intended.</li>
+      </ol>
+    </div>
 
-  <h2>5. Extending the Application</h2>
-  
-  <h3>Adding a New Filter Strategy</h3>
-  <p>If you need to group flats by something other than Filter (e.g., Rotator Angle), modify <code>FileScannerService.ExposureGrouping</code>.</p>
+    <h2 id="logic">5. Logic-sensitive Areas</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Matching risk areas</h3>
+        <ul>
+          <li>Strict temperature gate and bias-guard thresholds interact; changing one can alter fallback behavior materially.</li>
+          <li>Reason strings are displayed in UI and logs, and are used in some display heuristics.</li>
+          <li>Manual override path must survive plan rebuild and processing call path.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Materialization risk areas</h3>
+        <ul>
+          <li>Folder scope: all content under top-level <code>DARKS###</code> is treated as one candidate pool.</li>
+          <li>Manifest reuse key and pipeline version must stay consistent.</li>
+          <li>Output naming/pathing changes can break matching reuse and report accounting.</li>
+        </ul>
+      </div>
+    </div>
 
-  <h3>Modifying the Processing Logic</h3>
-  <p>The actual image processing logic resides in the JavaScript template, not C#. You must edit the hardcoded template string in <code>PixInsightService.GetPJSRTemplate()</code> to change how ImageIntegration or ImageCalibration is configured.</p>
+    <h2 id="debug">6. Debugging and Observability</h2>
+    <div class="card">
+      <h3>Where to inspect</h3>
+      <ul>
+        <li>UI log panel for coarse and stage logs.</li>
+        <li>Session log path printed at startup (temp location).</li>
+        <li>Detailed file logger configured in <code>App.xaml.cs</code>.</li>
+      </ul>
 
-</div>
+      <h3>PixInsight execution details</h3>
+      <ul>
+        <li>Script files are generated under temp (<code>flatmaster_script_*.js</code>).</li>
+        <li>Engine launches PixInsight with retry argument variants and sentinel-file completion checks.</li>
+        <li>Template choice is driven by job relative directory (<code>__DARKMATERIALIZE__</code> selects dark template).</li>
+      </ul>
+
+      <h3>Native engine progress</h3>
+      <p>Native logs include load counts, calibration counts, normalization stats, selected rejection algorithm, and write completion lines.</p>
+    </div>
+
+    <h2 id="release">7. Release and Publishing</h2>
+    <div class="card">
+      <h3>Self-contained publish (example)</h3>
+      <pre><code>dotnet publish src/FlatMaster.WPF/FlatMaster.WPF.csproj \
+  -c Release \
+  -r win-x64 \
+  --self-contained true \
+  /p:PublishSingleFile=true</code></pre>
+      <p>License files are embedded resources and available at runtime even in self-contained deployments.</p>
+
+      <h3>Release validation checklist</h3>
+      <ol>
+        <li>Build and tests pass.</li>
+        <li>Native path: dark materialization + flat processing validated.</li>
+        <li>PixInsight path: dark template and flat template both validated.</li>
+        <li>Output format toggle validated for XISF and FITS.</li>
+        <li>Matching diagnostics regenerate cleanly post-process.</li>
+      </ol>
+    </div>
+
+    <h2 id="quality">8. Code Quality Gates</h2>
+    <div class="card">
+      <ul>
+        <li><span class="ok">Required:</span> <code>dotnet build</code> and <code>dotnet test</code> green on <code>FlatMaster.sln</code>.</li>
+        <li><span class="ok">Required:</span> No UI freeze regressions on long dark materialization stages.</li>
+        <li><span class="ok">Required:</span> No writes into source dark library paths; output root only.</li>
+        <li><span class="warn">Recommended:</span> Keep docs synchronized when changing matching priorities, thresholds, or output naming.</li>
+      </ul>
+      <p>For algorithmic changes, use side-by-side PI minus native comparison with numeric stats before shipping.</p>
+    </div>
+  </div>
 </body>
 </html>

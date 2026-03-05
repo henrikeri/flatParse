@@ -38,14 +38,35 @@ MIT:
 - Microsoft.Extensions.Primitives 9.0.0
 - System.Diagnostics.DiagnosticSource 9.0.0
 - System.IO.Pipelines 9.0.0
+- Microsoft.NETCore.Platforms 1.0.1
+- Microsoft.NETCore.Targets 1.0.1
+- System.IO 4.1.0
+- System.IO.FileSystem 4.0.1
+- System.IO.FileSystem.Primitives 4.0.1
+- System.Reflection 4.1.0
+- System.Reflection.Primitives 4.0.1
+- System.Runtime 4.1.0
+- System.Runtime.Handles 4.0.1
+- System.Runtime.InteropServices 4.1.0
+- System.Text.Encoding 4.0.11
+- System.Text.Encoding.Extensions 4.0.11
 - System.Text.Encodings.Web 9.0.0
 - System.Text.Json 9.0.0
+- System.Threading 4.0.11
+- System.Threading.Tasks 4.0.11
+- System.Threading.Timer 4.0.1
 
 Test-only components
 
 Apache-2.0:
 - xunit 2.6.2
 - xunit.runner.visualstudio 2.5.4
+- xunit.abstractions 2.0.3
+- xunit.analyzers 1.6.0
+- xunit.assert 2.6.2
+- xunit.core 2.6.2
+- xunit.extensibility.core 2.6.2
+- xunit.extensibility.execution 2.6.2
 - FluentAssertions 6.12.0
 
 BSD-3-Clause:
@@ -57,6 +78,9 @@ MIT:
 - Microsoft.CodeCoverage 17.8.0
 - Microsoft.TestPlatform.ObjectModel 17.8.0
 - Microsoft.TestPlatform.TestHost 17.8.0
+- Microsoft.Win32.Primitives 4.3.0
+- NETStandard.Library 1.6.1
+- NuGet.Frameworks 6.5.0
 - Newtonsoft.Json 13.0.1
 
 ---

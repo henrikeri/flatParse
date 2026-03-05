@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Services\PixInsightTemplate.pjsr" />
+    <EmbeddedResource Include="Services\PixInsightTemplate.DARKS.pjsr" />
   </ItemGroup>
 
   <ItemGroup>

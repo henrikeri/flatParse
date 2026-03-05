@@ -31,8 +31,13 @@ public sealed class DarkFrame
     public double? Temperature { get; set; }
     public bool IsSelected { get; set; } = true;
 
+    /// <summary>
+    /// The path to the nearest DARKSXXX or DARKXXX ancestor directory (for grouping purposes)
+    /// </summary>
+    public string? DarkGroupFolder { get; set; }
+
     public string FileName => Path.GetFileName(FilePath);
-    
+
     /// <summary>
     /// Calculate a matching score against desired criteria
     /// Higher scores indicate better matches
@@ -40,28 +45,28 @@ public sealed class DarkFrame
     public double CalculateMatchScore(MatchingCriteria criteria, DarkMatchingOptions options)
     {
         double score = 0.0;
-        
+
         // Binning match (critical)
-        if (options.EnforceBinning && !string.IsNullOrEmpty(criteria.Binning) && 
+        if (options.EnforceBinning && !string.IsNullOrEmpty(criteria.Binning) &&
             !string.IsNullOrEmpty(Binning) && Binning == criteria.Binning)
         {
             score += 3.0;
         }
-        
+
         // Gain match (important)
         if (options.PreferSameGainOffset && criteria.Gain.HasValue && Gain.HasValue)
         {
             if (Math.Abs(Gain.Value - criteria.Gain.Value) < 0.01)
                 score += 2.0;
         }
-        
+
         // Offset match (important)
         if (options.PreferSameGainOffset && criteria.Offset.HasValue && Offset.HasValue)
         {
             if (Math.Abs(Offset.Value - criteria.Offset.Value) < 0.5)
                 score += 2.0;
         }
-        
+
         // Temperature proximity (nice to have)
         if (options.PreferClosestTemp && criteria.Temperature.HasValue && Temperature.HasValue)
         {
@@ -71,7 +76,7 @@ public sealed class DarkFrame
                 score += 1.5 - (tempDelta * 0.2);
             }
         }
-        
+
         return score;
     }
 }
@@ -85,6 +90,8 @@ public sealed record DarkMatchingOptions
     public bool PreferSameGainOffset { get; init; } = true;
     public bool PreferClosestTemp { get; init; } = true;
     public double MaxTempDeltaC { get; init; } = 5.0;
+    public double DarkOverBiasTempDeltaC { get; init; } = 5.0;
+    public double DarkOverBiasExposureDeltaSeconds { get; init; } = 5.0;
     public bool AllowNearestExposureWithOptimize { get; init; } = true;
 }
 

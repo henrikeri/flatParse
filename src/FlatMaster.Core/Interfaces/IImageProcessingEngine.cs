@@ -20,8 +20,8 @@ namespace FlatMaster.Core.Interfaces;
 public interface IImageProcessingEngine
 {
     Task<ProcessingResult> ExecuteAsync(
-        ProcessingPlan plan, 
-        IProgress<string> progress, 
+        ProcessingPlan plan,
+        IProgress<string> progress,
         CancellationToken cancellationToken = default);
 }
 

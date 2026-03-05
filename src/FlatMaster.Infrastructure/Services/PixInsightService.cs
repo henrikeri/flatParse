@@ -1,4 +1,4 @@
-// Copyright (C) 2026 Henrik E. Riise
+﻿// Copyright (C) 2026 Henrik E. Riise
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -29,14 +29,9 @@ namespace FlatMaster.Infrastructure.Services;
 /// <summary>
 /// Generates and executes PixInsight PJSR scripts
 /// </summary>
-public sealed class PixInsightService : IPixInsightService
+public sealed partial class PixInsightService(ILogger<PixInsightService> logger) : IPixInsightService
 {
-    private readonly ILogger<PixInsightService> _logger;
-
-    public PixInsightService(ILogger<PixInsightService> logger)
-    {
-      _logger = logger;
-    }
+    private readonly ILogger<PixInsightService> _logger = logger;
 
     public string GeneratePJSRScript(ProcessingPlan plan)
     {
@@ -64,7 +59,10 @@ public sealed class PixInsightService : IPixInsightService
                         binning = g.MatchingCriteria?.Binning,
                         gain = g.MatchingCriteria?.Gain,
                         offset = g.MatchingCriteria?.Offset,
-                        temp = g.MatchingCriteria?.Temperature
+                        temp = g.MatchingCriteria?.Temperature,
+                        manualDarkPath = string.IsNullOrWhiteSpace(g.MatchingCriteria?.ManualDarkPath)
+                            ? null
+                            : NormalizePath(g.MatchingCriteria!.ManualDarkPath!)
                     }
                 }).ToArray()
             }).ToArray(),
@@ -83,12 +81,15 @@ public sealed class PixInsightService : IPixInsightService
                 enforceBinning = plan.Configuration.DarkMatching.EnforceBinning,
                 preferSameGainOffset = plan.Configuration.DarkMatching.PreferSameGainOffset,
                 preferClosestTemp = plan.Configuration.DarkMatching.PreferClosestTemp,
-                maxTempDeltaC = plan.Configuration.DarkMatching.MaxTempDeltaC
+                maxTempDeltaC = plan.Configuration.DarkMatching.MaxTempDeltaC,
+                darkOverBiasTempDeltaC = plan.Configuration.DarkMatching.DarkOverBiasTempDeltaC,
+                darkOverBiasExposureDeltaSeconds = plan.Configuration.DarkMatching.DarkOverBiasExposureDeltaSeconds
             },
             allowNearestExposureWithOptimize = plan.Configuration.DarkMatching.AllowNearestExposureWithOptimize,
             cacheDirName = plan.Configuration.CacheDirName,
             calibratedSubdirBase = plan.Configuration.CalibratedSubdirBase,
             masterSubdirName = plan.Configuration.MasterSubdirName,
+            outputExtension = NormalizeOutputExtension(plan.Configuration.OutputFileExtension),
             xisfHintsCal = plan.Configuration.XisfHintsCal,
             xisfHintsMaster = plan.Configuration.XisfHintsMaster,
             rejection = new
@@ -102,58 +103,28 @@ public sealed class PixInsightService : IPixInsightService
 
         // Use UnsafeRelaxedJsonEscaping so paths come through cleanly as forward slashes
         // JSON is valid JavaScript, so var CFG = {...}; works as direct assignment
-        var jsonConfig = JsonSerializer.Serialize(config, new JsonSerializerOptions 
-        { 
+        var jsonConfig = JsonSerializer.Serialize(config, new JsonSerializerOptions
+        {
             WriteIndented = true,
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         });
         var jsConfigObjectLiteral = ConvertJsonToJsObjectLiteral(jsonConfig);
 
-        var debugScriptMode = Environment.GetEnvironmentVariable("FM_PI_DEBUG_SCRIPT");
-        if (string.Equals(debugScriptMode, "touch", StringComparison.OrdinalIgnoreCase))
-        {
-            return NormalizeScriptLineEndings($@"var __SENTINEL = ""{sentinelPath}"";
-function touch(p, s){{ try{{ var f=new File; f.createForWriting(p); f.outTextLn(s); f.close(); }}catch(e){{}} }}
-touch(__SENTINEL, ""OK"");");
-        }
-        if (string.Equals(debugScriptMode, "cfg", StringComparison.OrdinalIgnoreCase))
-        {
-            return NormalizeScriptLineEndings($@"var __SENTINEL = ""{sentinelPath}"";
-function touch(p, s){{ try{{ var f=new File; f.createForWriting(p); f.outTextLn(s); f.close(); }}catch(e){{}} }}
-var CFG = {jsConfigObjectLiteral};
-touch(__SENTINEL, ""OK"");");
-        }
-        if (string.Equals(debugScriptMode, "logic", StringComparison.OrdinalIgnoreCase))
-        {
-            return NormalizeScriptLineEndings($@"var __SENTINEL = ""{sentinelPath}"";
-function touch(p, s){{ try{{ var f=new File; f.createForWriting(p); f.outTextLn(s); f.close(); }}catch(e){{}} }}
-var CFG = {jsConfigObjectLiteral};
-var jobs = CFG.plan || [];
-var n = 0;
-for (var j=0; j<jobs.length; j++) {{
-  var gs = jobs[j].groups || [];
-  for (var g=0; g<gs.length; g++) n += (gs[g].files || []).length;
-}}
-touch(__SENTINEL, ""OK:files="" + n);");
-        }
-        if (string.Equals(debugScriptMode, "probe-ii", StringComparison.OrdinalIgnoreCase))
-        {
-            return NormalizeScriptLineEndings($@"var __SENTINEL = ""{sentinelPath}"";
-function touch(p, s){{ try{{ var f=new File; f.createForWriting(p); f.outTextLn(s); f.close(); }}catch(e){{}} }}
-try {{
-  var ii = new ImageIntegration;
-  touch(__SENTINEL, ""OK:ImageIntegration"");
-}} catch(e) {{
-  touch(__SENTINEL, ""ERROR:"" + e);
-}}");
-        }
-        
-        // Build config + template as one script
-        // sentinel path is set independently so the catch block works even if CFG parse fails
-        var script = GetPJSRTemplate()
+        // Debug script injection via environment variable FM_PI_DEBUG_SCRIPT has been removed.
+        // Scripts are now always generated from the template and configuration object.
+
+        var useDarkTemplate = UsesDarkTemplate(plan);
+        var templateName = ResolveTemplateName(plan);
+        _logger.LogInformation("GeneratePJSRScript: using template {TemplateName} (jobs={JobCount}, darkMaterialize={IsDarkMaterialize})", templateName, plan.SelectedJobs.Count(), useDarkTemplate);
+
+        // Build config + chosen template as one script
+        var script = GetPJSRTemplate(templateName)
             .Replace("%SENTINEL_PATH%", sentinelPath)
             .Replace("%CONFIG_JS_OBJECT_LITERAL%", jsConfigObjectLiteral);
-        
+
+        if (useDarkTemplate)
+            ValidateDarkTemplateScript(script, "template");
+
         return NormalizeScriptLineEndings(script);
     }
 
@@ -165,21 +136,17 @@ try {{
         CancellationToken cancellationToken = default)
     {
         if (!File.Exists(pixInsightExe))
-        {
-            return new ProcessingResult
-            {
-                Success = false, ExitCode = -1, Output = "",
-                ErrorMessage = $"PixInsight executable not found: {pixInsightExe}"
-            };
-        }
+            return MissingPixInsightExecutableResult(pixInsightExe);
 
-        var jobList = plan.SelectedJobs.ToList();
+        var jobList = BuildPixInsightEligibleJobs(plan.SelectedJobs, logOutput);
         if (jobList.Count == 0)
+            return NoJobsResult();
+
+        // Force one folder per PixInsight invocation to avoid large multi-folder batches.
+        if (batchSize != 1)
         {
-            return new ProcessingResult
-            {
-                Success = true, ExitCode = 0, Output = "No jobs to process."
-            };
+            logOutput?.Report("[PixInsight] Overriding batch size to 1: processing one folder per PixInsight invocation.");
+            batchSize = 1;
         }
 
         logOutput?.Report($"[PixInsight] Executable: {pixInsightExe}");
@@ -188,33 +155,7 @@ try {{
         var runId = Guid.NewGuid().ToString("N");
         var tempRoot = Path.GetTempPath();
 
-        // â”€â”€ Preflight (once) â”€â”€
-        KillExistingPixInsightProcesses(logOutput);
-        var preflightSentinelPath = Path.Combine(tempRoot, $"flatmaster_preflight_{runId}.txt");
-        if (File.Exists(preflightSentinelPath)) try { File.Delete(preflightSentinelPath); } catch { }
-
-        var preflightScriptPath = Path.Combine(tempRoot, $"flatmaster_preflight_{runId}.js");
-        await File.WriteAllTextAsync(preflightScriptPath, BuildPreflightScript(preflightSentinelPath), cancellationToken);
-        logOutput?.Report($"[PixInsight] Preflight script: {preflightScriptPath}");
-
-        var preflightResult = await ExecuteWithVariantsAsync(
-            preflightScriptPath, pixInsightExe, preflightSentinelPath, "PREFLIGHT_OK", logOutput, cancellationToken);
-        if (!preflightResult.Success)
-        {
-            return new ProcessingResult
-            {
-                Success = false, ExitCode = preflightResult.ExitCode,
-                Output = preflightResult.Output,
-                ErrorMessage = "PixInsight preflight failed. The script did not execute. " +
-                               "Check PixInsight installation and CLI invocation."
-            };
-        }
-
-        // Kill PI after preflight and wait for full shutdown before batches
-        KillExistingPixInsightProcesses(logOutput);
-        await Task.Delay(3000, cancellationToken);
-
-        // â”€â”€ Batch loop â”€â”€
+        // Batch loop
         int totalBatches = (jobList.Count + batchSize - 1) / batchSize;
         int succeeded = 0, failed = 0;
         var allOutput = new StringBuilder();
@@ -229,42 +170,42 @@ try {{
             int firstIdx = b * batchSize + 1;
             int lastIdx = firstIdx + batchJobs.Count - 1;
             int batchFiles = batchJobs.Sum(j => j.TotalFileCount);
-            logOutput?.Report($"\nâ•â• Folders {firstIdx}-{lastIdx} of {jobList.Count}  ({filesProcessedSoFar + batchFiles}/{totalFiles} files) â•â•");
+            logOutput?.Report($"\n== Folders {firstIdx}-{lastIdx} of {jobList.Count} ({filesProcessedSoFar + batchFiles}/{totalFiles} files) ==");
             foreach (var j in batchJobs)
                 logOutput?.Report($"  {j.DirectoryPath}");
 
-            // Build a partial plan for this batch
-            var batchPlan = new ProcessingPlan
-            {
-                Jobs = batchJobs,
-                DarkCatalog = plan.DarkCatalog.ToList(),
-                Configuration = plan.Configuration
-            };
+            var (scriptPath, sentinelPath) = await BuildBatchScriptAsync(
+                plan,
+                batchJobs,
+                tempRoot,
+                runId,
+                b + 1,
+                logOutput,
+                cancellationToken);
 
-            var scriptPath = Path.Combine(tempRoot, $"flatmaster_script_{runId}_b{b + 1}.js");
-            var sentinelPath = Path.Combine(tempRoot, $"flatmaster_sentinel_{runId}_b{b + 1}.txt");
-            var script = GeneratePJSRScript(batchPlan, sentinelPath);
-            await File.WriteAllTextAsync(scriptPath, script, cancellationToken);
-            logOutput?.Report($"  Script: {script.Length / 1024} KB ({scriptPath})");
+            // Generated script created (not persisted for debug in normal mode)
 
-            if (File.Exists(sentinelPath)) try { File.Delete(sentinelPath); } catch { }
+            TryDeleteFile(sentinelPath);
             KillExistingPixInsightProcesses(logOutput);
 
             var batchResult = await ExecuteWithVariantsAsync(
                 scriptPath, pixInsightExe, sentinelPath, "OK", logOutput, cancellationToken);
-
             allOutput.AppendLine(batchResult.Output);
+            if (!batchResult.Success)
+            {
+                // Failure reported; not persisting scripts/output in normal mode.
+            }
             if (batchResult.Success)
             {
-              succeeded++;
-              filesProcessedSoFar += batchFiles;
-              logOutput?.Report($"  âœ“ Folders {firstIdx}-{lastIdx} done  ({filesProcessedSoFar}/{totalFiles} files)");
+                succeeded++;
+                filesProcessedSoFar += batchFiles;
+                logOutput?.Report($"  [OK] Folders {firstIdx}-{lastIdx} done ({filesProcessedSoFar}/{totalFiles} files)");
             }
             else
             {
-              failed++;
-              filesProcessedSoFar += batchFiles; // count them even on failure for progress
-              logOutput?.Report($"  âœ— Folders {firstIdx}-{lastIdx} FAILED: {batchResult.ErrorMessage}");
+                failed++;
+                filesProcessedSoFar += batchFiles; // count them even on failure for progress
+                logOutput?.Report($"  [FAILED] Folders {firstIdx}-{lastIdx} FAILED: {batchResult.ErrorMessage}");
             }
         }
 
@@ -281,6 +222,93 @@ try {{
             FailedBatches = failed,
             TotalBatches = totalBatches
         };
+    }
+
+    private async Task<(string ScriptPath, string SentinelPath)> BuildBatchScriptAsync(
+        ProcessingPlan plan,
+        List<DirectoryJob> batchJobs,
+        string tempRoot,
+        string runId,
+        int batchNumber,
+        IProgress<string>? logOutput,
+        CancellationToken cancellationToken)
+    {
+        var batchPlan = new ProcessingPlan
+        {
+            Jobs = batchJobs,
+            DarkCatalog = [.. plan.DarkCatalog],
+            Configuration = plan.Configuration
+        };
+
+        var batchUsesDarkTemplate = UsesDarkTemplate(batchPlan);
+        var batchTemplateName = ResolveTemplateName(batchPlan);
+        logOutput?.Report($"  Template: {batchTemplateName}");
+
+        var scriptPath = Path.Combine(tempRoot, $"flatmaster_script_{runId}_b{batchNumber}.js");
+        var sentinelPath = Path.Combine(tempRoot, $"flatmaster_sentinel_{runId}_b{batchNumber}.txt");
+        var script = GeneratePJSRScript(batchPlan, sentinelPath);
+        if (batchUsesDarkTemplate)
+        {
+            ValidateDarkTemplateScript(script, "generated script");
+            logOutput?.Report("  Script mode: Dark integration-only");
+        }
+
+        await File.WriteAllTextAsync(scriptPath, script, cancellationToken);
+        logOutput?.Report($"  Script: {script.Length / 1024} KB ({scriptPath})");
+        return (scriptPath, sentinelPath);
+    }
+
+    private static List<DirectoryJob> BuildPixInsightEligibleJobs(
+        IEnumerable<DirectoryJob> jobs,
+        IProgress<string>? logOutput)
+    {
+        var filtered = new List<DirectoryJob>();
+        int skippedGroupCount = 0;
+        int skippedFileCount = 0;
+
+        foreach (var job in jobs)
+        {
+            var eligibleGroups = new List<ExposureGroup>();
+            foreach (var group in job.ExposureGroups)
+            {
+                if (group.FilePaths.Count < 3)
+                {
+                    skippedGroupCount++;
+                    skippedFileCount += group.FilePaths.Count;
+                    continue;
+                }
+
+                eligibleGroups.Add(new ExposureGroup
+                {
+                    ExposureTime = group.ExposureTime,
+                    FilePaths = [.. group.FilePaths],
+                    RepresentativeMetadata = group.RepresentativeMetadata,
+                    AverageTemperatureC = group.AverageTemperatureC,
+                    MatchingCriteria = group.MatchingCriteria
+                });
+            }
+
+            if (eligibleGroups.Count == 0)
+                continue;
+
+            filtered.Add(new DirectoryJob
+            {
+                DirectoryPath = job.DirectoryPath,
+                BaseRootPath = job.BaseRootPath,
+                OutputRootPath = job.OutputRootPath,
+                RelativeDirectory = job.RelativeDirectory,
+                ExposureGroups = eligibleGroups,
+                IsSelected = job.IsSelected
+            });
+        }
+
+        if (skippedGroupCount > 0)
+        {
+            logOutput?.Report(
+                $"[PixInsight] Skipping {skippedGroupCount} exposure group(s) with fewer than 3 flats ({skippedFileCount} file(s)).");
+        }
+
+        return filtered;
     }
 
     private static void KillExistingPixInsightProcesses(IProgress<string>? logOutput)
@@ -308,264 +336,306 @@ try {{
         catch { /* best effort */ }
     }
 
-    private string[][] BuildArgsVariants(string scriptPath)
+    private static string[][] BuildArgsVariants(string scriptPath)
     {
         var normalized = NormalizePath(scriptPath);
-        return new[]
-        {
+        return
+        [
             // Always force a new PI instance (-n) to avoid IPC/slot reuse issues.
             // Keep to documented run forms and avoid -x/startup-script paths.
-            new[] { "--automation-mode", "--no-startup-scripts", "-n", $"--run={normalized}", "--force-exit" },
-            new[] { "--automation-mode", "-n", $"--run={normalized}", "--force-exit" },
-            new[] { "-n", $"--run={normalized}", "--force-exit" }
+            ["--automation-mode", "--no-startup-scripts", "-n", $"--run={normalized}", "--force-exit"],
+            ["--automation-mode", "-n", $"--run={normalized}", "--force-exit"],
+            ["-n", $"--run={normalized}", "--force-exit"]
+        ];
+    }
+
+    private static ProcessingResult MissingPixInsightExecutableResult(string pixInsightExe)
+    {
+        return new ProcessingResult
+        {
+            Success = false,
+            ExitCode = -1,
+            Output = "",
+            ErrorMessage = $"PixInsight executable not found: {pixInsightExe}"
         };
     }
 
-      private static string BuildPreflightScript(string sentinelPath)
-      {
-        var normalized = NormalizePath(sentinelPath);
-        return $"var f=new File; f.createForWriting(\"{normalized}\"); f.outTextLn(\"PREFLIGHT_OK\"); f.close();";
-      }
+    private static ProcessingResult NoJobsResult()
+    {
+        return new ProcessingResult
+        {
+            Success = true,
+            ExitCode = 0,
+            Output = "No jobs to process."
+        };
+    }
 
-      private async Task<ProcessingResult> ExecuteWithVariantsAsync(
-        string scriptPath,
-        string pixInsightExe,
-        string sentinelPath,
-        string expectedSentinel,
-        IProgress<string>? logOutput,
-        CancellationToken cancellationToken)
-      {
+    private static void TryDeleteFile(string path)
+    {
+        if (File.Exists(path))
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+                // Best effort cleanup.
+            }
+        }
+    }
+
+    private async Task<ProcessingResult> ExecuteWithVariantsAsync(
+      string scriptPath,
+      string pixInsightExe,
+      string sentinelPath,
+      string expectedSentinel,
+      IProgress<string>? logOutput,
+      CancellationToken cancellationToken)
+    {
         var argsVariants = BuildArgsVariants(scriptPath);
         var output = new StringBuilder();
         int exitCode = -1;
 
         for (int attempt = 0; attempt < argsVariants.Length; attempt++)
         {
-          var variant = argsVariants[attempt];
-          output.Clear();
-          var sawEmptyScriptError = false;
-          var sawInvalidInstanceIndex = false;
-          var attemptStartUtc = DateTime.UtcNow;
-          var maxAttemptDuration = expectedSentinel == "PREFLIGHT_OK"
-              ? TimeSpan.FromMinutes(2)
-              : TimeSpan.FromMinutes(20);
+            var variant = argsVariants[attempt];
+            output.Clear();
+            var sawEmptyScriptError = false;
+            var sawInvalidInstanceIndex = false;
+            var attemptStartUtc = DateTime.UtcNow;
+            var maxAttemptDuration = TimeSpan.FromMinutes(20);
 
-          logOutput?.Report($"[PixInsight attempt {attempt + 1}/{argsVariants.Length}] args=[{string.Join(", ", variant)}]");
-          _logger.LogInformation("Starting PixInsight: {Exe} args={@Args}", pixInsightExe, variant);
+            logOutput?.Report($"[PixInsight attempt {attempt + 1}/{argsVariants.Length}] args=[{string.Join(", ", variant)}]");
+            _logger.LogInformation("Starting PixInsight: {Exe} args={@Args}", pixInsightExe, variant);
 
-          var startInfo = new ProcessStartInfo
-          {
-            FileName = pixInsightExe,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-            StandardOutputEncoding = System.Text.Encoding.UTF8,
-            StandardErrorEncoding = System.Text.Encoding.UTF8
-          };
-
-          foreach (var arg in variant)
-            startInfo.ArgumentList.Add(arg);
-
-          logOutput?.Report($"[PixInsight] Launching (stdout/stderr redirected)...");
-          _logger.LogInformation("ExecuteScriptAsync: Redirecting stdout/stderr");
-
-          try
-          {
-            var baselinePids = GetPixInsightPids();
-            using var process = new Process { StartInfo = startInfo };
-
-            process.Start();
-
-            var outputTask = Task.Run(async () =>
+            var startInfo = new ProcessStartInfo
             {
-              try
-              {
-                while (!process.StandardOutput.EndOfStream)
-                {
-                  var line = await process.StandardOutput.ReadLineAsync(cancellationToken);
-                  if (line != null)
-                  {
-                    output.AppendLine(line);
-                    logOutput?.Report(line);
-                    _logger.LogInformation("[PI stdout] {Line}", line);
-                    if (line.IndexOf("empty script", StringComparison.OrdinalIgnoreCase) >= 0)
-                        sawEmptyScriptError = true;
-                    if (line.IndexOf("invalid application instance index", StringComparison.OrdinalIgnoreCase) >= 0)
-                        sawInvalidInstanceIndex = true;
-                  }
-                }
-              }
-              catch (Exception ex)
-              {
-                _logger.LogWarning(ex, "Error reading stdout");
-              }
-            }, cancellationToken);
+                FileName = pixInsightExe,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8
+            };
 
-            var errorTask = Task.Run(async () =>
-            {
-              try
-              {
-                while (!process.StandardError.EndOfStream)
-                {
-                  var line = await process.StandardError.ReadLineAsync(cancellationToken);
-                  if (line != null)
-                  {
-                    if (IsHarmlessStderrNoise(line))
-                    {
-                      _logger.LogDebug("[PI stderr/gpu] {Line}", line);
-                    }
-                    else
-                    {
-                      output.AppendLine("[ERROR] " + line);
-                      logOutput?.Report("[ERROR] " + line);
-                      _logger.LogError("[PI stderr] {Line}", line);
-                      if (line.IndexOf("empty script", StringComparison.OrdinalIgnoreCase) >= 0)
-                          sawEmptyScriptError = true;
-                      if (line.IndexOf("invalid application instance index", StringComparison.OrdinalIgnoreCase) >= 0)
-                          sawInvalidInstanceIndex = true;
-                    }
-                  }
-                }
-              }
-              catch (Exception ex)
-              {
-                _logger.LogWarning(ex, "Error reading stderr");
-              }
-            }, cancellationToken);
+            foreach (var arg in variant)
+                startInfo.ArgumentList.Add(arg);
+
+            logOutput?.Report($"[PixInsight] Launching (stdout/stderr redirected)...");
+            _logger.LogInformation("ExecuteScriptAsync: Redirecting stdout/stderr");
 
             try
             {
-              var sentinelSeen = false;
-              var sawDetachedPixInsight = false;
-              var loggedDetached = false;
-              while (true)
-              {
-                  if (File.Exists(sentinelPath))
-                  {
-                      sentinelSeen = true;
-                      break;
-                  }
-                  var piRunning = HasDetachedPixInsightProcess(baselinePids);
-                  if (piRunning)
-                  {
-                      sawDetachedPixInsight = true;
-                      if (!loggedDetached)
-                      {
-                          loggedDetached = true;
-                          logOutput?.Report("[PixInsight] Detached script execution detected; waiting for sentinel...");
-                      }
-                  }
+                var baselinePids = GetPixInsightPids();
+                logOutput?.Report($"[PixInsight] Baseline PixInsight PIDs: {string.Join(',', baselinePids)}");
+                using var process = new Process { StartInfo = startInfo };
 
-                  // The launcher process returns quickly while script execution may continue
-                  // in a detached PixInsight instance. Wait until detached PI stops too.
-                  if (process.HasExited && !piRunning)
-                  {
-                      if (sawDetachedPixInsight || DateTime.UtcNow - attemptStartUtc > TimeSpan.FromSeconds(3))
-                      {
-                          logOutput?.Report($"[PixInsight] Launcher exited and no detached PI is running (detachedSeen={sawDetachedPixInsight}).");
-                          break;
-                      }
-                  }
-
-                  if (sawEmptyScriptError)
-                  {
-                      logOutput?.Report("[PixInsight] Detected 'Empty script' output. Terminating process.");
-                      KillExistingPixInsightProcesses(logOutput);
-                      break;
-                  }
-
-                  if (sawInvalidInstanceIndex)
-                  {
-                      logOutput?.Report("[PixInsight] Detected 'Invalid application instance index'. Terminating process and retrying with fresh instance arguments.");
-                      KillExistingPixInsightProcesses(logOutput);
-                      break;
-                  }
-
-                  if (DateTime.UtcNow - attemptStartUtc > maxAttemptDuration)
-                  {
-                      logOutput?.Report("[PixInsight] Attempt timed out waiting for sentinel. Terminating process.");
-                      KillExistingPixInsightProcesses(logOutput);
-                      break;
-                  }
-
-                  await Task.Delay(500, cancellationToken);
-              }
-
-              if (sentinelSeen)
-              {
-                  // Scripts can complete in detached PI instances; always clean up after success.
-                  KillExistingPixInsightProcesses(null);
-              }
-
-              if (!process.HasExited)
-                  await process.WaitForExitAsync(cancellationToken);
-
-              await Task.WhenAll(outputTask, errorTask);
-            }
-            catch (OperationCanceledException)
-            {
-              _logger.LogInformation("PixInsight execution cancelled - terminating process");
-              logOutput?.Report("[ABORT] Terminating PixInsight process...");
-
-              try
-              {
-                if (!process.HasExited)
+                process.Start();
+                try
                 {
-                  process.Kill(true);
-                  await process.WaitForExitAsync();
+                    logOutput?.Report($"[PixInsight] Launched launcher PID={process.Id}");
                 }
-              }
-              catch (Exception killEx)
-              {
-                _logger.LogWarning(killEx, "Error killing PixInsight process");
-              }
+                catch { }
 
-              throw;
+                // Snapshot PIDs after start
+                try
+                {
+                    var after = GetPixInsightPids();
+                    logOutput?.Report($"[PixInsight] Current PixInsight PIDs after start: {string.Join(',', after)}");
+                }
+                catch { }
+
+                var outputTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!process.StandardOutput.EndOfStream)
+                        {
+                            var line = await process.StandardOutput.ReadLineAsync(cancellationToken);
+                            if (line != null)
+                            {
+                                output.AppendLine(line);
+                                logOutput?.Report(line);
+                                _logger.LogInformation("[PI stdout] {Line}", line);
+                                if (line.Contains("empty script", StringComparison.OrdinalIgnoreCase))
+                                    sawEmptyScriptError = true;
+                                if (line.Contains("invalid application instance index", StringComparison.OrdinalIgnoreCase))
+                                    sawInvalidInstanceIndex = true;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error reading stdout");
+                    }
+                }, cancellationToken);
+
+                var errorTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!process.StandardError.EndOfStream)
+                        {
+                            var line = await process.StandardError.ReadLineAsync(cancellationToken);
+                            if (line != null)
+                            {
+                                if (IsHarmlessStderrNoise(line))
+                                {
+                                    _logger.LogDebug("[PI stderr/gpu] {Line}", line);
+                                }
+                                else
+                                {
+                                    output.AppendLine("[ERROR] " + line);
+                                    logOutput?.Report("[ERROR] " + line);
+                                    _logger.LogError("[PI stderr] {Line}", line);
+                                    if (line.Contains("empty script", StringComparison.OrdinalIgnoreCase))
+                                        sawEmptyScriptError = true;
+                                    if (line.Contains("invalid application instance index", StringComparison.OrdinalIgnoreCase))
+                                        sawInvalidInstanceIndex = true;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error reading stderr");
+                    }
+                }, cancellationToken);
+
+                try
+                {
+                    var sentinelSeen = false;
+                    var sawDetachedPixInsight = false;
+                    var loggedDetached = false;
+                    while (true)
+                    {
+                        if (File.Exists(sentinelPath))
+                        {
+                            sentinelSeen = true;
+                            break;
+                        }
+                        var piRunning = HasDetachedPixInsightProcess(baselinePids);
+                        if (piRunning)
+                        {
+                            sawDetachedPixInsight = true;
+                            if (!loggedDetached)
+                            {
+                                loggedDetached = true;
+                                logOutput?.Report("[PixInsight] Detached script execution detected; waiting for sentinel...");
+                            }
+                        }
+
+                        // The launcher process returns quickly while script execution may continue
+                        // in a detached PixInsight instance. Wait until detached PI stops too.
+                        if (process.HasExited && !piRunning)
+                        {
+                            if (sawDetachedPixInsight || DateTime.UtcNow - attemptStartUtc > TimeSpan.FromSeconds(3))
+                            {
+                                logOutput?.Report($"[PixInsight] Launcher exited and no detached PI is running (detachedSeen={sawDetachedPixInsight}).");
+                                break;
+                            }
+                        }
+
+                        if (sawEmptyScriptError)
+                        {
+                            logOutput?.Report("[PixInsight] Detected 'Empty script' output. Terminating process.");
+                            KillExistingPixInsightProcesses(logOutput);
+                            break;
+                        }
+
+                        if (sawInvalidInstanceIndex)
+                        {
+                            logOutput?.Report("[PixInsight] Detected 'Invalid application instance index'. Terminating process and retrying with fresh instance arguments.");
+                            KillExistingPixInsightProcesses(logOutput);
+                            break;
+                        }
+
+                        if (DateTime.UtcNow - attemptStartUtc > maxAttemptDuration)
+                        {
+                            logOutput?.Report("[PixInsight] Attempt timed out waiting for sentinel. Terminating process.");
+                            KillExistingPixInsightProcesses(logOutput);
+                            break;
+                        }
+
+                        await Task.Delay(500, cancellationToken);
+                    }
+
+                    if (sentinelSeen)
+                    {
+                        // Scripts can complete in detached PI instances; always clean up after success.
+                        KillExistingPixInsightProcesses(null);
+                    }
+
+                    if (!process.HasExited)
+                        await process.WaitForExitAsync(cancellationToken);
+
+                    await Task.WhenAll(outputTask, errorTask);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("PixInsight execution cancelled - terminating process");
+                    logOutput?.Report("[ABORT] Terminating PixInsight process...");
+
+                    try
+                    {
+                        if (!process.HasExited)
+                        {
+                            process.Kill(true);
+                            await process.WaitForExitAsync(cancellationToken);
+                        }
+                    }
+                    catch (Exception killEx)
+                    {
+                        _logger.LogWarning(killEx, "Error killing PixInsight process");
+                    }
+
+                    throw;
+                }
+
+                exitCode = process.ExitCode;
+                logOutput?.Report($"[PI exit code={exitCode}]");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                logOutput?.Report($"[spawn error] {ex.Message}");
+                _logger.LogWarning(ex, "PixInsight launch attempt failed");
+                continue;
             }
 
-            exitCode = process.ExitCode;
-            logOutput?.Report($"[PI exit code={exitCode}]");
-          }
-          catch (OperationCanceledException) { throw; }
-          catch (Exception ex)
-          {
-            logOutput?.Report($"[spawn error] {ex.Message}");
-            _logger.LogWarning(ex, "PixInsight launch attempt failed");
-            continue;
-          }
-
-          if (File.Exists(sentinelPath))
-          {
-            var sentinelContent = await File.ReadAllTextAsync(sentinelPath, cancellationToken);
-            var trimmed = sentinelContent.Trim();
-            logOutput?.Report($"[sentinel] {trimmed}");
-            var sentinelSuccess = trimmed == expectedSentinel;
-
-            return new ProcessingResult
+            if (File.Exists(sentinelPath))
             {
-              // Launcher exit code is not reliable for detached script execution.
-              Success = sentinelSuccess,
-              ExitCode = exitCode,
-              Output = output.ToString(),
-              ErrorMessage = sentinelSuccess ? null : $"PixInsight reported error: {trimmed}"
-            };
-          }
+                var sentinelContent = await File.ReadAllTextAsync(sentinelPath, cancellationToken);
+                var trimmed = sentinelContent.Trim();
+                logOutput?.Report($"[sentinel] {trimmed}");
+                var sentinelSuccess = trimmed == expectedSentinel;
 
-          logOutput?.Report("[PixInsight] No sentinel file found, trying next argument variant...");
-          // Kill PI before retrying with a different variant to avoid "Invalid application instance index"
-          KillExistingPixInsightProcesses(logOutput);
+                return new ProcessingResult
+                {
+                    // Launcher exit code is not reliable for detached script execution.
+                    Success = sentinelSuccess,
+                    ExitCode = exitCode,
+                    Output = output.ToString(),
+                    ErrorMessage = sentinelSuccess ? null : $"PixInsight reported error: {trimmed}"
+                };
+            }
+
+            logOutput?.Report("[PixInsight] No sentinel file found, trying next argument variant...");
+            // Kill PI before retrying with a different variant to avoid "Invalid application instance index"
+            KillExistingPixInsightProcesses(logOutput);
         }
 
         return new ProcessingResult
         {
-          Success = false,
-          ExitCode = exitCode,
-          Output = output.ToString(),
-          ErrorMessage = "PixInsight did not produce a sentinel file after all attempts. " +
+            Success = false,
+            ExitCode = exitCode,
+            Output = output.ToString(),
+            ErrorMessage = "PixInsight did not produce a sentinel file after all attempts. " +
                    "Verify that PixInsight is installed and the executable path is correct."
         };
-      }
+    }
 
     private static HashSet<int> GetPixInsightPids()
     {
@@ -628,8 +698,39 @@ try {{
             || line.Contains("GpuChannelManager");
     }
 
-    private static string NormalizePath(string path) 
+    private static string NormalizePath(string path)
         => path.Replace("\\", "/");
+
+    private static string NormalizeOutputExtension(string? extension)
+    {
+        if (string.Equals(extension, "fits", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(extension, "fit", StringComparison.OrdinalIgnoreCase))
+            return "fits";
+
+        return "xisf";
+    }
+
+    private static bool UsesDarkTemplate(ProcessingPlan plan)
+        => plan.SelectedJobs.Any(j => IsDarkMaterializeRelativeDirectory(j.RelativeDirectory));
+
+    private static string ResolveTemplateName(ProcessingPlan plan)
+        => UsesDarkTemplate(plan) ? "PixInsightTemplate.DARKS.pjsr" : "PixInsightTemplate.pjsr";
+
+    private static void ValidateDarkTemplateScript(string script, string context)
+    {
+        if (script.Contains("ImageCalibration", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Dark materialization script validation failed: {context} contains ImageCalibration.");
+    }
+
+    private static bool IsDarkMaterializeRelativeDirectory(string? relativeDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(relativeDirectory))
+            return false;
+
+        var rel = relativeDirectory.Replace('\\', '/').Trim();
+        return rel.Equals("__DARKMATERIALIZE__", StringComparison.OrdinalIgnoreCase)
+            || rel.StartsWith("__DARKMATERIALIZE__/", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string NormalizeScriptLineEndings(string script)
     {
@@ -639,22 +740,84 @@ try {{
 
     private static string ConvertJsonToJsObjectLiteral(string json)
     {
-        // Convert JSON object keys to unquoted JavaScript property names.
-        // Example: "plan": [...] -> plan: [...]
-        return Regex.Replace(
-            json,
-            @"(^|[\{\[,]\s*)""([A-Za-z_][A-Za-z0-9_]*)""\s*:",
-            "$1$2:",
-            RegexOptions.Multiline);
-    }
+        // Safely convert JSON to a JavaScript object literal with unquoted keys
+        // for valid JS identifiers. This avoids brittle regex-based replacements
+        // that can break object/array structure for large configs.
+        using var doc = JsonDocument.Parse(json);
+        var sb = new StringBuilder();
 
-    private static string GetPJSRTemplate()
+        void WriteElement(JsonElement el)
+        {
+            switch (el.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    sb.Append('{');
+                    bool firstProp = true;
+                    foreach (var prop in el.EnumerateObject())
+                    {
+                        if (!firstProp) sb.Append(',');
+                        firstProp = false;
+
+                        // Emit unquoted identifier when it's a valid JS identifier;
+                        // otherwise fall back to a quoted JSON string for the key.
+                        var name = prop.Name;
+                        if (MyRegex().IsMatch(name))
+                            sb.Append(name);
+                        else
+                            sb.Append(JsonSerializer.Serialize(name));
+
+                        sb.Append(':');
+                        WriteElement(prop.Value);
+                    }
+                    sb.Append('}');
+                    break;
+
+                case JsonValueKind.Array:
+                    sb.Append('[');
+                    bool firstItem = true;
+                    foreach (var item in el.EnumerateArray())
+                    {
+                        if (!firstItem) sb.Append(',');
+                        firstItem = false;
+                        WriteElement(item);
+                    }
+                    sb.Append(']');
+                    break;
+
+                case JsonValueKind.String:
+                    // Use JsonSerializer to ensure proper escaping of string contents
+                    sb.Append(JsonSerializer.Serialize(el.GetString()));
+                    break;
+
+                case JsonValueKind.Number:
+                    sb.Append(el.GetRawText());
+                    break;
+
+                case JsonValueKind.True:
+                    sb.Append("true");
+                    break;
+
+                case JsonValueKind.False:
+                    sb.Append("false");
+                    break;
+
+                case JsonValueKind.Null:
+                default:
+                    sb.Append("null");
+                    break;
+            }
+        }
+
+        WriteElement(doc.RootElement);
+        return sb.ToString();
+    }
+    private static string GetPJSRTemplate(string templateFileName = "PixInsightTemplate.pjsr")
     {
         var assembly = Assembly.GetExecutingAssembly();
         try
         {
             var resourceName = assembly.GetManifestResourceNames()
-                .FirstOrDefault(n => n.EndsWith("PixInsightTemplate.pjsr", StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(n => n.EndsWith(templateFileName, StringComparison.OrdinalIgnoreCase));
             if (!string.IsNullOrWhiteSpace(resourceName))
             {
                 using var resourceStream = assembly.GetManifestResourceStream(resourceName);
@@ -673,10 +836,13 @@ try {{
         }
 
         var baseDir = AppContext.BaseDirectory;
+        // Also consider common source locations when running from the workspace during development
+        var workspaceSrc = Path.Combine(Directory.GetCurrentDirectory(), "src", "FlatMaster.Infrastructure", "Services", templateFileName);
         var templateCandidates = new[]
         {
-            Path.Combine(baseDir, "Services", "PixInsightTemplate.pjsr"),
-            Path.Combine(baseDir, "PixInsightTemplate.pjsr")
+            Path.Combine(baseDir, "Services", templateFileName),
+            Path.Combine(baseDir, templateFileName),
+            workspaceSrc
         };
 
         foreach (var templatePath in templateCandidates)
@@ -685,10 +851,13 @@ try {{
                 return File.ReadAllText(templatePath);
         }
 
-        return @"
-var __SENTINEL = ""%SENTINEL_PATH%"";
-function touch(p, s){ try{ if(!p) return; var f=new File; f.createForWriting(p); if(s) f.outTextLn(s); f.close(); }catch(e){} }
-touch(__SENTINEL, ""ERROR: PixInsightTemplate.pjsr not found"");
-";
+        return "var __SENTINEL = \"%SENTINEL_PATH%\";\n"
+             + "function touch(p, s){ try{ if(!p) return; var f=new File; f.createForWriting(p); if(s) f.outTextLn(s); f.close(); }catch(e){} }\n"
+             + $"touch(__SENTINEL, \"ERROR: {templateFileName} not found\");\n";
     }
+
+    [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
+    private static partial Regex MyRegex();
 }
+
+
