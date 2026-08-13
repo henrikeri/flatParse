@@ -19,14 +19,33 @@ namespace FlatMaster.Infrastructure.Services;
 
 public static class MasterDarkPathing
 {
-    public static string BuildMasterDarkOutputDirectory(string outputRoot, double exposureSeconds, double? temperatureC)
+    public static string BuildMasterDarkOutputDirectory(
+        string outputRoot,
+        double exposureSeconds,
+        double? temperatureC,
+        string? binning = null,
+        double? gain = null,
+        double? offset = null,
+        int width = 0,
+        int height = 0,
+        int channels = 1)
     {
-        return Path.Combine(
+        var basePath = Path.Combine(
             outputRoot,
             "Master",
             "Darks",
             FormatExposureFolder(exposureSeconds),
             FormatTemperatureFolder(temperatureC));
+
+        var hasGeometry = width > 0 && height > 0;
+        if (string.IsNullOrWhiteSpace(binning) && !gain.HasValue && !offset.HasValue && !hasGeometry)
+            return basePath;
+
+        var identity = FormatIdentityFolder(binning, gain, offset);
+        if (hasGeometry)
+            identity += $"_Res{width}x{height}x{Math.Max(1, channels)}";
+
+        return Path.Combine(basePath, identity);
     }
 
     public static string BuildMasterDarkFileName(double exposureSeconds, double? temperatureC, string outputFileExtension = "xisf")
@@ -66,6 +85,20 @@ public static class MasterDarkPathing
             return Math.Round(rounded).ToString(CultureInfo.InvariantCulture) + "degC";
 
         return rounded.ToString("0.0", CultureInfo.InvariantCulture) + "degC";
+    }
+
+    public static string FormatIdentityFolder(string? binning, double? gain, double? offset)
+    {
+        var bin = SanitizePathToken(string.IsNullOrWhiteSpace(binning) ? "Unknown" : binning.Trim());
+        var gainToken = gain.HasValue ? gain.Value.ToString("0.###", CultureInfo.InvariantCulture) : "Unknown";
+        var offsetToken = offset.HasValue ? offset.Value.ToString("0.###", CultureInfo.InvariantCulture) : "Unknown";
+        return $"Bin{bin}_Gain{gainToken}_Offset{offsetToken}";
+    }
+
+    private static string SanitizePathToken(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        return new string(value.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray());
     }
 
     private static string NormalizeOutputExtension(string? extension)

@@ -25,12 +25,25 @@ public sealed class DirectoryJob
     public required string OutputRootPath { get; init; }
     public required string RelativeDirectory { get; init; }
     public required List<ExposureGroup> ExposureGroups { get; init; } = [];
+
+    /// <summary>
+    /// Supported image files that must be copied unchanged to the replicated
+    /// output. This is used for selected exposure groups below the three-frame
+    /// integration minimum, as well as single-image directories containing an
+    /// existing master or an image with unreadable metadata.
+    /// </summary>
+    public List<string> PassthroughFiles { get; init; } = [];
+
     public bool IsSelected { get; set; } = true;
 
     /// <summary>
     /// Total number of flat files in this directory across all exposure groups
     /// </summary>
-    public int TotalFileCount => ExposureGroups.Sum(g => g.Count);
+    public int TotalFileCount => ExposureGroups
+        .SelectMany(group => group.FilePaths)
+        .Concat(PassthroughFiles)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Count();
 
     /// <summary>
     /// Number of valid exposure groups (>=3 files each)

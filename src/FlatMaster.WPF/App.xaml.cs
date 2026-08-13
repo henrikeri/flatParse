@@ -39,19 +39,19 @@ public partial class App : Application
         {
             HookGlobalExceptionHandlers();
 
-            // Build configuration
+            // Load bundled defaults first, then allow an appsettings.json next
+            // to the executable to override them for advanced deployments.
+            using var defaultConfig = typeof(App).Assembly.GetManifestResourceStream(
+                "FlatMaster.WPF.appsettings.json");
             var builder = new ConfigurationBuilder()
-                .SetBasePath(AppContext.BaseDirectory)
-                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
-
-            var baseConfig = builder.Build();
-            var autoConfig = GetAutoTunedMetadataSettings(baseConfig);
-            if (autoConfig.Count > 0)
-            {
-                builder.AddInMemoryCollection(autoConfig);
-            }
+                .SetBasePath(AppContext.BaseDirectory);
+            if (defaultConfig != null)
+                builder.AddJsonStream(defaultConfig);
+            builder.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
 
             Configuration = builder.Build();
+            foreach (var (key, value) in GetAutoTunedMetadataSettings(Configuration))
+                Configuration[key] = value;
 
             // Configure services
             var serviceCollection = new ServiceCollection();

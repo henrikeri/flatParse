@@ -30,7 +30,8 @@ public interface IProcessingReportService
         IEnumerable<MatchingDiagnostic> matchingDiagnostics,
         IEnumerable<DarkFrame> darkCatalog,
         ProcessingConfiguration config,
-        OutputPathConfiguration outputConfig);
+        OutputPathConfiguration outputConfig,
+        ProcessingResult? processingResult = null);
 
     /// <summary>
     /// Format a report as human-readable text

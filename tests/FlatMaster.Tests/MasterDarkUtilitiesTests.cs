@@ -31,5 +31,9 @@ public class MasterDarkUtilitiesTests
         Assert.Equal(a, b);
         var c = MasterDarkUtilities.ComputeMasterKeyHash(30.001, "1", 0.0, 1024, 768);
         Assert.NotEqual(a, c);
+        var differentOffset = MasterDarkUtilities.ComputeMasterKeyHash(30.0, "1", 0.0, 1024, 768, offset: 20);
+        var differentChannels = MasterDarkUtilities.ComputeMasterKeyHash(30.0, "1", 0.0, 1024, 768, channels: 3);
+        Assert.NotEqual(a, differentOffset);
+        Assert.NotEqual(a, differentChannels);
     }
 }

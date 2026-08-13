@@ -252,11 +252,11 @@
                                               IsEnabled="{Binding IsNotDarksOnlyMode}"
                                               Foreground="{StaticResource PrimaryTextBrush}" Margin="0,0,0,8"/>
 
-                                    <TextBlock Text="Bias fallback guard:"
+                                    <TextBlock Text="Dark vs bias selection:"
                                                Foreground="{StaticResource PrimaryTextBrush}"
                                                FontWeight="SemiBold"
                                                Margin="0,4,0,6"/>
-                                    <TextBlock Text="If the selected dark exceeds either delta limit, a bias will be selected."
+                                    <TextBlock Text="Bias is treated as a zero-second dark. It is selected when it is the closer exposure match, or when the selected dark exceeds either delta limit."
                                                Foreground="{StaticResource SecondaryTextBrush}"
                                                TextWrapping="Wrap"
                                                Margin="0,0,0,8"/>
@@ -706,13 +706,13 @@
                                                     <Setter Property="Background" Value="Transparent"/>
                                                     <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
                                                 </Trigger>
-                                                <DataTrigger Binding="{Binding HasMinimumFrames}" Value="False">
+                                                <DataTrigger Binding="{Binding IsProcessable}" Value="False">
                                                     <Setter Property="Background" Value="#FFD6D6"/>
                                                     <Setter Property="Foreground" Value="#7A0000"/>
                                                 </DataTrigger>
                                                 <MultiDataTrigger>
                                                     <MultiDataTrigger.Conditions>
-                                                        <Condition Binding="{Binding HasMinimumFrames}" Value="False"/>
+                                                        <Condition Binding="{Binding IsProcessable}" Value="False"/>
                                                         <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource Self}}" Value="True"/>
                                                     </MultiDataTrigger.Conditions>
                                                     <Setter Property="Background" Value="#FFD6D6"/>
@@ -748,19 +748,19 @@
                                             <Style.Triggers>
                                                 <MultiDataTrigger>
                                                     <MultiDataTrigger.Conditions>
-                                                        <Condition Binding="{Binding HasMinimumFrames}" Value="True"/>
+                                                        <Condition Binding="{Binding IsProcessable}" Value="True"/>
                                                         <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource Self}}" Value="True"/>
                                                     </MultiDataTrigger.Conditions>
                                                     <Setter Property="Background" Value="#F4F8FD"/>
                                                 </MultiDataTrigger>
                                                 <MultiDataTrigger>
                                                     <MultiDataTrigger.Conditions>
-                                                        <Condition Binding="{Binding HasMinimumFrames}" Value="True"/>
+                                                        <Condition Binding="{Binding IsProcessable}" Value="True"/>
                                                         <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource Self}}" Value="True"/>
                                                     </MultiDataTrigger.Conditions>
                                                     <Setter Property="Background" Value="#E8F2FF"/>
                                                 </MultiDataTrigger>
-                                                <DataTrigger Binding="{Binding HasMinimumFrames}" Value="False">
+                                                <DataTrigger Binding="{Binding IsProcessable}" Value="False">
                                                     <Setter Property="Background" Value="#FFD6D6"/>
                                                     <Setter Property="Foreground" Value="#7A0000"/>
                                                 </DataTrigger>
@@ -1102,7 +1102,7 @@
                 BorderThickness="0,1,0,0" BorderBrush="{StaticResource BorderBrush}"
                 Padding="24,12">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                <TextBlock Text="FlatMaster v1.0.4" Foreground="{StaticResource SecondaryTextBrush}"/>
+                <TextBlock Text="{Binding ApplicationDisplayName}" Foreground="{StaticResource SecondaryTextBrush}"/>
                 <TextBlock Text="|" Margin="12,0" Foreground="{StaticResource BorderBrush}"/>
                 <Button Content="Licenses" Click="OnLicensesClick"
                         Style="{StaticResource SecondaryButtonStyle}" FontSize="11"

@@ -51,5 +51,8 @@ public sealed record ProcessingResult
     public int SucceededBatches { get; init; }
     public int FailedBatches { get; init; }
     public int TotalBatches { get; init; }
+    public int SucceededFiles { get; init; }
+    public int FailedFiles { get; init; }
+    public List<string> FailedDirectories { get; init; } = [];
 }
 

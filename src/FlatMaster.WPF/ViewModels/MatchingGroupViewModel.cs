@@ -27,6 +27,8 @@ public partial class MatchingGroupViewModel : ObservableObject
     public required string FlatAverageTemperatureDisplay { get; init; }
     public required int FileCount { get; init; }
     public required bool HasMinimumFrames { get; init; }
+    public required bool IsPreservationOnly { get; init; }
+    public required bool IsProcessable { get; init; }
     public required string SelectedDarkDisplay { get; init; }
     public required string SelectionReason { get; init; }
     public required double TemperatureDeltaSortValue { get; init; }

@@ -26,7 +26,7 @@ public sealed class MasterDarkMaterializer(
     private static readonly JsonSerializerOptions ManifestJsonOptions = new() { WriteIndented = true };
 
     private readonly ILogger<MasterDarkMaterializer> _logger = logger;
-    private const int CurrentMasterDarkPipelineVersion = 3;
+    private const int CurrentMasterDarkPipelineVersion = 4;
     private readonly IMetadataReaderService _metadataReader = metadataReader;
     private readonly IDarkMatchingService _darkMatcher = darkMatcher;
     private readonly IPixInsightService _pixInsight = pixInsight;
@@ -41,6 +41,7 @@ public sealed class MasterDarkMaterializer(
         public required double ExposureSeconds { get; init; }
         public required string Binning { get; init; }
         public required double? Gain { get; init; }
+        public required double? Offset { get; init; }
         public required double? TemperatureC { get; init; }
         public ImageMetadata? RepresentativeMetadata { get; init; }
         public required string PixInsightExecutable { get; init; }
@@ -117,6 +118,8 @@ public sealed class MasterDarkMaterializer(
                             double? exposureFromHeader = null;
                             string? binningFromHeader = null;
                             double? gainFromHeader = null;
+                            double? offsetFromHeader = null;
+                            var channels = 1;
                             if (string.IsNullOrWhiteSpace(keyHash))
                             {
                                 try
@@ -129,12 +132,17 @@ public sealed class MasterDarkMaterializer(
                                         binningFromHeader = bVal;
                                     if (info.Headers.TryGetValue("GAIN", out var gVal) && double.TryParse(gVal, NumberStyles.Any, CultureInfo.InvariantCulture, out var gv))
                                         gainFromHeader = gv;
+                                    if (info.Headers.TryGetValue("OFFSET", out var oVal) && double.TryParse(oVal, NumberStyles.Any, CultureInfo.InvariantCulture, out var ov))
+                                        offsetFromHeader = ov;
+                                    channels = info.Channels;
                                     keyHash = FlatMaster.Core.Utilities.MasterDarkUtilities.ComputeMasterKeyHash(
                                         exposureFromHeader ?? sourceEntry?.ExposureTime ?? 0.0,
                                         binningFromHeader ?? sourceEntry?.Binning ?? "1",
-                                        gainFromHeader ?? sourceEntry?.Gain,
-                                        info.Width,
-                                        info.Height);
+                                         gainFromHeader ?? sourceEntry?.Gain,
+                                         info.Width,
+                                         info.Height,
+                                         offsetFromHeader ?? sourceEntry?.Offset,
+                                         channels);
                                 }
                                 catch (Exception ex)
                                 {
@@ -147,7 +155,16 @@ public sealed class MasterDarkMaterializer(
 
                             var exposureForPath = sourceEntry?.ExposureTime ?? exposureFromHeader ?? 0.0;
                             var tempForPath = sourceEntry?.Temperature ?? manifestTemp;
-                            var outDir = MasterDarkPathing.BuildMasterDarkOutputDirectory(outputRoot, exposureForPath, tempForPath);
+                            var outDir = MasterDarkPathing.BuildMasterDarkOutputDirectory(
+                                outputRoot,
+                                exposureForPath,
+                                tempForPath,
+                                sourceEntry?.Binning ?? binningFromHeader,
+                                sourceEntry?.Gain ?? gainFromHeader,
+                                sourceEntry?.Offset ?? offsetFromHeader,
+                                sourceEntry?.Width ?? 0,
+                                sourceEntry?.Height ?? 0,
+                                sourceEntry?.Channels ?? channels);
                             Directory.CreateDirectory(outDir);
                             var destMaster = Path.Combine(
                                 outDir,
@@ -161,7 +178,15 @@ public sealed class MasterDarkMaterializer(
 
                             _logger.LogInformation("Imported existing master dark into output root: {Path}", destMaster);
                             Report($"[MasterDark] Imported existing master: {destMaster}");
-                            RegisterMasterInPlan(createdBag, planLock, plan, destMaster, exposureForPath, sourceEntry?.Binning ?? binningFromHeader, sourceEntry?.Gain ?? gainFromHeader, tempForPath);
+                            RegisterMasterInPlan(
+                                createdBag, planLock, plan, destMaster, exposureForPath,
+                                sourceEntry?.Binning ?? binningFromHeader,
+                                sourceEntry?.Gain ?? gainFromHeader,
+                                sourceEntry?.Offset ?? offsetFromHeader,
+                                tempForPath,
+                                sourceEntry?.Width ?? 0,
+                                sourceEntry?.Height ?? 0,
+                                sourceEntry?.Channels ?? channels);
                         }
                         catch (Exception ex)
                         {
@@ -219,6 +244,12 @@ public sealed class MasterDarkMaterializer(
                 if (files.Count == 0)
                     throw new InvalidOperationException($"Master dark materialization failed: no raw dark frames found in {folder}");
 
+                ValidateRawDarkMetadata(
+                    files,
+                    metaBatch,
+                    GetMaterializationTemperatureTolerance(plan.Configuration.DarkMatching),
+                    folder);
+
                 double? exposureFromName = FlatMaster.Core.Utilities.MasterDarkUtilities.ExtractExposureFromFolderName(Path.GetFileName(folder));
                 double exposure = 0.0;
                 var exposures = files
@@ -251,6 +282,7 @@ public sealed class MasterDarkMaterializer(
                     .FirstOrDefault(m => m != null);
                 var binning = sampleMeta?.Binning ?? "1";
                 var gain = sampleMeta?.Gain;
+                var offset = sampleMeta?.Offset;
                 var temperatureValues = files
                     .Select(f => metaBatch.TryGetValue(f, out var m) ? m.Temperature : null)
                     .Where(t => t.HasValue)
@@ -258,22 +290,31 @@ public sealed class MasterDarkMaterializer(
                     .OrderBy(t => t)
                     .ToList();
                 var normalizedTempMedian = temperatureValues.Count > 0
-                    ? temperatureValues[temperatureValues.Count / 2]
+                    ? CalculateMedian(temperatureValues)
                     : null as double?;
-                int width = 0, height = 0;
+                int width = 0, height = 0, channels = 1;
                 try
                 {
                     var fits = new FitsImageIO(_logger);
                     var info = await fits.ReadAsync(files[0], ct);
-                    width = info.Width; height = info.Height;
+                    width = info.Width; height = info.Height; channels = info.Channels;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Failed reading resolution from {File}", files[0]);
                 }
 
-                var keyHash = FlatMaster.Core.Utilities.MasterDarkUtilities.ComputeMasterKeyHash(exposure, binning, gain, width, height);
-                var outDir = MasterDarkPathing.BuildMasterDarkOutputDirectory(plan.Jobs.First().OutputRootPath, exposure, normalizedTempMedian);
+                var keyHash = FlatMaster.Core.Utilities.MasterDarkUtilities.ComputeMasterKeyHash(exposure, binning, gain, width, height, offset, channels);
+                var outDir = MasterDarkPathing.BuildMasterDarkOutputDirectory(
+                    plan.Jobs.First().OutputRootPath,
+                    exposure,
+                    normalizedTempMedian,
+                    binning,
+                    gain,
+                    offset,
+                    width,
+                    height,
+                    channels);
                 var masterPath = Path.Combine(
                     outDir,
                     MasterDarkPathing.BuildMasterDarkFileName(exposure, normalizedTempMedian, plan.Configuration.OutputFileExtension));
@@ -281,11 +322,11 @@ public sealed class MasterDarkMaterializer(
 
                 _logger.LogInformation("Materialize: folder={Folder} key={Key} outDir={OutDir} masterPath={MasterPath}", folder, keyHash, outDir, masterPath);
 
-                if (await CanReuseExistingMasterAsync(masterPath, metaPath, keyHash, ct))
+                if (await CanReuseExistingMasterAsync(masterPath, metaPath, keyHash, files, ct))
                 {
                     _logger.LogInformation("Reusing existing master dark: {Path} (outDir={OutDir})", masterPath, outDir);
                     Report($"[MasterDark] Reusing existing master: {masterPath}");
-                    RegisterMasterInPlan(createdBag, planLock, plan, masterPath, exposure, binning, gain, normalizedTempMedian);
+                    RegisterMasterInPlan(createdBag, planLock, plan, masterPath, exposure, binning, gain, offset, normalizedTempMedian, width, height, channels);
                     return;
                 }
 
@@ -313,6 +354,7 @@ public sealed class MasterDarkMaterializer(
                             ExposureSeconds = exposure,
                             Binning = binning,
                             Gain = gain,
+                            Offset = offset,
                             TemperatureC = normalizedTempMedian,
                             RepresentativeMetadata = sampleMeta,
                             PixInsightExecutable = pixInsightExecutable!,
@@ -321,7 +363,26 @@ public sealed class MasterDarkMaterializer(
 
                         Report($"[MasterDark] {Path.GetFileName(folder)}: invoking PixInsight integration ({files.Count} frames).");
                         await MaterializeWithPixInsightAsync(plan, request, masterPath, cancellationToken, progress);
-                        RegisterMasterInPlan(createdBag, planLock, plan, masterPath, exposure, binning, gain, normalizedTempMedian);
+                        var pixInsightMasterInfo = new FileInfo(masterPath);
+                        var pixInsightManifest = new MasterDarkManifest
+                        {
+                            PipelineVersion = CurrentMasterDarkPipelineVersion,
+                            Key = keyHash,
+                            ExposureSeconds = exposure,
+                            CameraId = null,
+                            Binning = binning,
+                            Gain = gain,
+                            Offset = offset,
+                            Width = width,
+                            Height = height,
+                            Channels = channels,
+                            MasterFileLength = pixInsightMasterInfo.Length,
+                            MasterLastWriteUtc = pixInsightMasterInfo.LastWriteTimeUtc,
+                            TemperatureMedianC = normalizedTempMedian,
+                            SourceFrames = [.. files.Select(CreateSourceFrameInfo)]
+                        };
+                        await WriteManifestAtomicallyAsync(metaPath, pixInsightManifest, cancellationToken);
+                        RegisterMasterInPlan(createdBag, planLock, plan, masterPath, exposure, binning, gain, offset, normalizedTempMedian, width, height, channels);
                         Report($"[MasterDark] Created master: {masterPath}");
                         return;
                     }
@@ -329,7 +390,12 @@ public sealed class MasterDarkMaterializer(
                     // Native integration path: load and integrate raw dark frames directly.
                     var stageLabel = $"Native master-dark ({Path.GetFileName(folder)})";
                     Report($"[MasterDark] {Path.GetFileName(folder)}: native loading {files.Count} frame(s).");
-                    var imgs = await LoadImageBatchAsync(files, stageLabel, ct, progress);
+                    var imgs = await LoadImageBatchAsync(
+                        files,
+                        stageLabel,
+                        plan.Configuration.MaxParallelism,
+                        ct,
+                        progress);
                     var resultPixels = IntegrateDarkFrames(imgs, plan.Configuration.Rejection, stageLabel, progress);
 
                     // Build master ImageData from first header
@@ -357,10 +423,14 @@ public sealed class MasterDarkMaterializer(
                         CameraId = null,
                         Binning = binning,
                         Gain = gain,
+                        Offset = offset,
                         Width = imgs[0].Width,
                         Height = imgs[0].Height,
+                        Channels = imgs[0].Channels,
+                        MasterFileLength = new FileInfo(tmpMaster).Length,
+                        MasterLastWriteUtc = File.GetLastWriteTimeUtc(tmpMaster),
                         TemperatureMedianC = normalizedTempMedian,
-                        SourceFrames = [.. files.Select(f => new SourceFrameInfo { Path = f, LastWriteUtc = File.GetLastWriteTimeUtc(f) })]
+                        SourceFrames = [.. files.Select(CreateSourceFrameInfo)]
                     };
 
                     var tmpMeta = Path.Combine(tmpDir, "MasterDark.meta.json");
@@ -372,8 +442,8 @@ public sealed class MasterDarkMaterializer(
                     var finalMeta = metaPath;
                     try
                     {
-                        File.Copy(tmpMaster, finalMaster, overwrite: true);
-                        File.Copy(tmpMeta, finalMeta, overwrite: true);
+                        File.Move(tmpMaster, finalMaster, overwrite: true);
+                        File.Move(tmpMeta, finalMeta, overwrite: true);
                         _logger.LogInformation("Created master dark: {Path}", finalMaster);
                         Report($"[MasterDark] Created master: {finalMaster}");
                     }
@@ -382,7 +452,7 @@ public sealed class MasterDarkMaterializer(
                         _logger.LogError(ex, "Failed writing master to final location {FinalMaster} (tmp: {TmpMaster})", finalMaster, tmpMaster);
                         throw;
                     }
-                    RegisterMasterInPlan(createdBag, planLock, plan, finalMaster, exposure, binning, gain, normalizedTempMedian);
+                    RegisterMasterInPlan(createdBag, planLock, plan, finalMaster, exposure, binning, gain, offset, normalizedTempMedian, width, height, channels);
                 }
                 finally
                 {
@@ -399,7 +469,7 @@ public sealed class MasterDarkMaterializer(
             }
         }
 
-        await ProcessMaterializationQueueAsync(requiredFolders, preferNative, cancellationToken, ProcessFolderAsync);
+        await ProcessMaterializationQueueAsync(requiredFolders, cancellationToken, ProcessFolderAsync);
 
         if (!failures.IsEmpty)
         {
@@ -538,37 +608,54 @@ public sealed class MasterDarkMaterializer(
                     return;
                 }
 
-                var outDir = MasterDarkPathing.BuildMasterDarkOutputDirectory(outputRoot, bucket.ExposureSeconds, bucket.TemperatureC);
+                var width = bucket.Width;
+                var height = bucket.Height;
+                var channels = Math.Max(1, bucket.Channels);
+                if (width <= 0 || height <= 0)
+                {
+                    try
+                    {
+                        var fitsInfo = new FitsImageIO(_logger);
+                        var info = await fitsInfo.ReadAsync(files[0], ct);
+                        width = info.Width;
+                        height = info.Height;
+                        channels = info.Channels;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed reading image dimensions from {File}", files[0]);
+                    }
+                }
+
+                var outDir = MasterDarkPathing.BuildMasterDarkOutputDirectory(
+                    outputRoot,
+                    bucket.ExposureSeconds,
+                    bucket.TemperatureC,
+                    bucket.Binning,
+                    bucket.Gain,
+                    bucket.Offset,
+                    width,
+                    height,
+                    channels);
                 Directory.CreateDirectory(outDir);
                 var masterPath = Path.Combine(
                     outDir,
                     MasterDarkPathing.BuildMasterDarkFileName(bucket.ExposureSeconds, bucket.TemperatureC, plan.Configuration.OutputFileExtension));
                 var metaPath = Path.Combine(outDir, "MasterDark.meta.json");
 
-                int width = 0, height = 0;
-                try
-                {
-                    var fitsInfo = new FitsImageIO(_logger);
-                    var info = await fitsInfo.ReadAsync(files[0], ct);
-                    width = info.Width;
-                    height = info.Height;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed reading image dimensions from {File}", files[0]);
-                }
-
                 var keyHash = FlatMaster.Core.Utilities.MasterDarkUtilities.ComputeMasterKeyHash(
                     bucket.ExposureSeconds,
                     bucket.Binning,
                     bucket.Gain,
                     width,
-                    height);
+                    height,
+                    bucket.Offset,
+                    channels);
 
-                if (await CanReuseExistingMasterAsync(masterPath, metaPath, keyHash, ct))
+                if (await CanReuseExistingMasterAsync(masterPath, metaPath, keyHash, files, ct))
                 {
                     Report($"[DarksOnly] Reusing existing master: {masterPath}");
-                    RegisterMasterInPlan(createdBag, planLock, plan, masterPath, bucket.ExposureSeconds, bucket.Binning, bucket.Gain, bucket.TemperatureC);
+                    RegisterMasterInPlan(createdBag, planLock, plan, masterPath, bucket.ExposureSeconds, bucket.Binning, bucket.Gain, bucket.Offset, bucket.TemperatureC, width, height, channels);
                     return;
                 }
 
@@ -585,6 +672,7 @@ public sealed class MasterDarkMaterializer(
                         ExposureSeconds = bucket.ExposureSeconds,
                         Binning = bucket.Binning,
                         Gain = bucket.Gain,
+                        Offset = bucket.Offset,
                         TemperatureC = bucket.TemperatureC,
                         RepresentativeMetadata = null,
                         PixInsightExecutable = pixInsightExecutable!,
@@ -596,7 +684,12 @@ public sealed class MasterDarkMaterializer(
                 else
                 {
                     var stageLabel = $"Darks-only bucket ({bucket.ExposureSeconds:0.###}s, {(bucket.TemperatureC?.ToString("0.0", CultureInfo.InvariantCulture) ?? "unknown")}C)";
-                    var imgs = await LoadImageBatchAsync(files, stageLabel, ct, progress);
+                    var imgs = await LoadImageBatchAsync(
+                        files,
+                        stageLabel,
+                        plan.Configuration.MaxParallelism,
+                        ct,
+                        progress);
                     var resultPixels = IntegrateDarkFrames(imgs, plan.Configuration.Rejection, stageLabel, progress);
 
                     var master = new FitsImageIO.ImageData
@@ -609,9 +702,10 @@ public sealed class MasterDarkMaterializer(
                     };
                     master.Headers["IMAGETYP"] = "Master Dark";
                     var outputExt = NormalizeOutputExtension(plan.Configuration.OutputFileExtension);
-                    await WriteImageAsync(masterPath, master, outputExt, ct);
+                    await WriteImageAtomicallyAsync(masterPath, master, outputExt, ct);
                 }
 
+                var masterInfo = new FileInfo(masterPath);
                 var manifest = new MasterDarkManifest
                 {
                     PipelineVersion = CurrentMasterDarkPipelineVersion,
@@ -620,14 +714,18 @@ public sealed class MasterDarkMaterializer(
                     CameraId = null,
                     Binning = bucket.Binning,
                     Gain = bucket.Gain,
+                    Offset = bucket.Offset,
                     Width = width,
                     Height = height,
+                    Channels = channels,
+                    MasterFileLength = masterInfo.Length,
+                    MasterLastWriteUtc = masterInfo.LastWriteTimeUtc,
                     TemperatureMedianC = bucket.TemperatureC,
-                    SourceFrames = [.. files.Select(f => new SourceFrameInfo { Path = f, LastWriteUtc = File.GetLastWriteTimeUtc(f) })]
+                    SourceFrames = [.. files.Select(CreateSourceFrameInfo)]
                 };
-                await WriteManifestAsync(metaPath, manifest, ct);
+                await WriteManifestAtomicallyAsync(metaPath, manifest, ct);
 
-                RegisterMasterInPlan(createdBag, planLock, plan, masterPath, bucket.ExposureSeconds, bucket.Binning, bucket.Gain, bucket.TemperatureC);
+                RegisterMasterInPlan(createdBag, planLock, plan, masterPath, bucket.ExposureSeconds, bucket.Binning, bucket.Gain, bucket.Offset, bucket.TemperatureC, width, height, channels);
                 Report($"[DarksOnly] Created master: {masterPath}");
             }
             catch (Exception ex)
@@ -638,7 +736,7 @@ public sealed class MasterDarkMaterializer(
             }
         }
 
-        await ProcessMaterializationQueueAsync(buckets, preferNative, cancellationToken, ProcessBucketAsync);
+        await ProcessMaterializationQueueAsync(buckets, cancellationToken, ProcessBucketAsync);
 
         if (!failures.IsEmpty)
         {
@@ -704,6 +802,7 @@ public sealed class MasterDarkMaterializer(
                     {
                         Binning = request.Binning,
                         Gain = request.Gain,
+                        Offset = request.Offset,
                         Temperature = request.TemperatureC
                     }
                 }
@@ -714,13 +813,14 @@ public sealed class MasterDarkMaterializer(
     private async Task<FitsImageIO.ImageData[]> LoadImageBatchAsync(
         IReadOnlyList<string> files,
         string stageLabel,
+        int maxParallelism,
         CancellationToken cancellationToken,
         IProgress<string>? progress = null)
     {
         if (files.Count == 0)
             return [];
 
-        var workers = Math.Max(1, Math.Min(Environment.ProcessorCount, files.Count));
+        var workers = Math.Max(1, Math.Min(maxParallelism, files.Count));
         var reportEvery = Math.Max(1, files.Count / 10);
         var loaded = 0;
         var images = new FitsImageIO.ImageData[files.Count];
@@ -754,6 +854,8 @@ public sealed class MasterDarkMaterializer(
                 progress?.Report($"[MasterDark] {stageLabel}: loaded {done}/{files.Count} ({Path.GetFileName(files[index])})");
             }
         });
+
+        ValidateImageGeometry(images, stageLabel);
 
         return images;
     }
@@ -815,23 +917,29 @@ public sealed class MasterDarkMaterializer(
             : FitsImageIO.WriteXisfAsync(path, image, ct);
     }
 
+    private static async Task WriteImageAtomicallyAsync(
+        string path,
+        FitsImageIO.ImageData image,
+        string outputExt,
+        CancellationToken cancellationToken)
+    {
+        var tempPath = path + ".tmp_" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await WriteImageAsync(tempPath, image, outputExt, cancellationToken);
+            File.Move(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+        }
+    }
+
     private static async Task ProcessMaterializationQueueAsync<T>(
         IEnumerable<T> workItems,
-        bool runInParallel,
         CancellationToken cancellationToken,
         Func<T, CancellationToken, Task> worker)
     {
-        if (runInParallel)
-        {
-            var options = new ParallelOptions
-            {
-                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount),
-                CancellationToken = cancellationToken
-            };
-            await Parallel.ForEachAsync(workItems, options, async (item, ct) => await worker(item, ct));
-            return;
-        }
-
         foreach (var item in workItems)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -892,7 +1000,11 @@ public sealed class MasterDarkMaterializer(
         {
             Exposure = Math.Round(d.ExposureTime, 3, MidpointRounding.AwayFromZero),
             Binning = string.IsNullOrWhiteSpace(d.Binning) ? "1" : d.Binning!.Trim(),
-            Gain = d.Gain.HasValue ? Math.Round(d.Gain.Value, 3, MidpointRounding.AwayFromZero) : double.NaN
+            Gain = d.Gain.HasValue ? Math.Round(d.Gain.Value, 3, MidpointRounding.AwayFromZero) : double.NaN,
+            Offset = d.Offset.HasValue ? Math.Round(d.Offset.Value, 3, MidpointRounding.AwayFromZero) : double.NaN,
+            d.Width,
+            d.Height,
+            Channels = Math.Max(1, d.Channels)
         });
 
         foreach (var g in grouped)
@@ -910,7 +1022,9 @@ public sealed class MasterDarkMaterializer(
                 {
                     var center = cluster.Average(x => x.Temperature!.Value);
                     var delta = Math.Abs(temp - center);
-                    if (delta <= tolerance && delta < bestDelta)
+                    var combinedMin = Math.Min(temp, cluster.Min(x => x.Temperature!.Value));
+                    var combinedMax = Math.Max(temp, cluster.Max(x => x.Temperature!.Value));
+                    if (combinedMax - combinedMin <= (2 * tolerance) + 1e-9 && delta < bestDelta)
                     {
                         target = cluster;
                         bestDelta = delta;
@@ -928,7 +1042,7 @@ public sealed class MasterDarkMaterializer(
             foreach (var cluster in clusters)
             {
                 var files = cluster.Select(x => x.FilePath).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
-                var tempMedian = cluster.Select(x => x.Temperature!.Value).OrderBy(x => x).ElementAt(cluster.Count / 2);
+                var tempMedian = CalculateMedian(cluster.Select(x => x.Temperature!.Value).OrderBy(x => x).ToList());
                 var label = cluster.Select(x => x.DarkGroupFolder).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).FirstOrDefault()
                     ?? Path.GetDirectoryName(files.First()) ?? "DARKS";
 
@@ -939,6 +1053,10 @@ public sealed class MasterDarkMaterializer(
                     TemperatureC = tempMedian,
                     Binning = g.Key.Binning,
                     Gain = double.IsNaN(g.Key.Gain) ? null : g.Key.Gain,
+                    Offset = double.IsNaN(g.Key.Offset) ? null : g.Key.Offset,
+                    Width = g.Key.Width,
+                    Height = g.Key.Height,
+                    Channels = g.Key.Channels,
                     FilePaths = files
                 });
             }
@@ -956,6 +1074,10 @@ public sealed class MasterDarkMaterializer(
                     TemperatureC = null,
                     Binning = g.Key.Binning,
                     Gain = double.IsNaN(g.Key.Gain) ? null : g.Key.Gain,
+                    Offset = double.IsNaN(g.Key.Offset) ? null : g.Key.Offset,
+                    Width = g.Key.Width,
+                    Height = g.Key.Height,
+                    Channels = g.Key.Channels,
                     FilePaths = files
                 });
             }
@@ -971,13 +1093,139 @@ public sealed class MasterDarkMaterializer(
         public required double? TemperatureC { get; init; }
         public required string Binning { get; init; }
         public required double? Gain { get; init; }
+        public required double? Offset { get; init; }
+        public required int Width { get; init; }
+        public required int Height { get; init; }
+        public required int Channels { get; init; }
         public required List<string> FilePaths { get; init; }
     }
 
-    private static async Task<bool> CanReuseExistingMasterAsync(
+    private static void ValidateRawDarkMetadata(
+        IReadOnlyCollection<string> files,
+        IReadOnlyDictionary<string, ImageMetadata> metadata,
+        double temperatureToleranceC,
+        string context)
+    {
+        var values = files
+            .Select(path => metadata.TryGetValue(path, out var item) ? item : null)
+            .Where(item => item != null)
+            .Cast<ImageMetadata>()
+            .ToList();
+
+        var types = values
+            .Select(item => item.Type)
+            .Where(type => type is ImageType.Dark or ImageType.DarkFlat)
+            .Distinct()
+            .ToList();
+        if (types.Count > 1)
+            throw new InvalidOperationException($"Raw dark pool '{context}' mixes Dark and DarkFlat frames.");
+
+        EnsureSingleTextValue(values.Select(item => item.Binning), "binning", context);
+        EnsureWithinTolerance(values.Select(item => item.ExposureTime), 0.001, "exposure", context);
+        EnsureWithinTolerance(values.Select(item => item.Gain), 0.01, "gain", context);
+        EnsureWithinTolerance(values.Select(item => item.Offset), 0.5, "offset", context);
+        EnsureTemperatureSpreadAllowed(values.Select(item => item.Temperature), temperatureToleranceC, context);
+    }
+
+    private static void EnsureSingleTextValue(IEnumerable<string?> values, string field, string context)
+    {
+        var distinct = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToList();
+        if (distinct.Count > 1)
+            throw new InvalidOperationException($"Raw dark pool '{context}' contains mixed {field} values.");
+    }
+
+    private static void EnsureWithinTolerance(
+        IEnumerable<double?> values,
+        double tolerance,
+        string field,
+        string context)
+    {
+        var known = values.Where(value => value.HasValue).Select(value => value!.Value).ToList();
+        if (known.Count > 1 && known.Max() - known.Min() > tolerance)
+            throw new InvalidOperationException(
+                $"Raw dark pool '{context}' contains mixed {field} values ({known.Min():0.###} to {known.Max():0.###}).");
+    }
+
+    private static void EnsureTemperatureSpreadAllowed(
+        IEnumerable<double?> values,
+        double toleranceRadiusC,
+        string context)
+    {
+        var known = values.Where(value => value.HasValue).Select(value => value!.Value).ToList();
+        if (IsTemperatureSpreadAllowed(known, toleranceRadiusC))
+            return;
+
+        var minimum = known.Min();
+        var maximum = known.Max();
+        throw new InvalidOperationException(
+            $"Raw dark pool '{context}' contains temperature values outside the " +
+            $"±{Math.Max(0.0, toleranceRadiusC):0.###} degC range " +
+            $"({minimum:0.###} to {maximum:0.###}; spread {maximum - minimum:0.###} degC).");
+    }
+
+    internal static bool IsTemperatureSpreadAllowed(IEnumerable<double> values, double toleranceRadiusC)
+    {
+        var known = values.ToList();
+        if (known.Count <= 1)
+            return true;
+
+        var allowedSpread = 2 * Math.Max(0.0, toleranceRadiusC);
+        return known.Max() - known.Min() <= allowedSpread + 1e-9;
+    }
+
+    internal static double GetMaterializationTemperatureTolerance(DarkMatchingOptions options)
+        => Math.Max(0.0, Math.Max(options.MaxTempDeltaC, options.DarkOverBiasTempDeltaC));
+
+    private static double CalculateMedian(IReadOnlyList<double> sortedValues)
+    {
+        if (sortedValues.Count == 0)
+            throw new ArgumentException("Cannot calculate the median of an empty set.", nameof(sortedValues));
+
+        var middle = sortedValues.Count / 2;
+        return sortedValues.Count % 2 == 0
+            ? (sortedValues[middle - 1] + sortedValues[middle]) / 2.0
+            : sortedValues[middle];
+    }
+
+    private static void ValidateImageGeometry(IReadOnlyList<FitsImageIO.ImageData> images, string context)
+    {
+        if (images.Count == 0)
+            return;
+
+        var first = images[0];
+        for (var index = 1; index < images.Count; index++)
+        {
+            var image = images[index];
+            if (image.Width != first.Width || image.Height != first.Height || image.Channels != first.Channels)
+            {
+                throw new InvalidOperationException(
+                    $"{context} contains mixed image geometry: " +
+                    $"{first.Width}x{first.Height}x{first.Channels} and {image.Width}x{image.Height}x{image.Channels}.");
+            }
+        }
+    }
+
+    private static SourceFrameInfo CreateSourceFrameInfo(string path)
+    {
+        var file = new FileInfo(path);
+        return new SourceFrameInfo
+        {
+            Path = file.FullName,
+            LastWriteUtc = file.LastWriteTimeUtc,
+            Length = file.Length
+        };
+    }
+
+    internal static async Task<bool> CanReuseExistingMasterAsync(
         string masterPath,
         string manifestPath,
         string expectedKeyHash,
+        IReadOnlyCollection<string> expectedSourceFiles,
         CancellationToken cancellationToken)
     {
         try
@@ -992,9 +1240,26 @@ public sealed class MasterDarkMaterializer(
                 !string.Equals(manifest.Key, expectedKeyHash, StringComparison.Ordinal))
                 return false;
 
+            var expectedSources = expectedSourceFiles
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(path => path, path => new FileInfo(path), StringComparer.OrdinalIgnoreCase);
+            if (manifest.SourceFrames.Count != expectedSources.Count)
+                return false;
+
+            var master = new FileInfo(masterPath);
+            if (!master.Exists ||
+                master.Length != manifest.MasterFileLength ||
+                master.LastWriteTimeUtc != manifest.MasterLastWriteUtc)
+                return false;
+
             foreach (var src in manifest.SourceFrames)
             {
-                if (!File.Exists(src.Path) || File.GetLastWriteTimeUtc(src.Path) != src.LastWriteUtc)
+                var sourcePath = Path.GetFullPath(src.Path);
+                if (!expectedSources.TryGetValue(sourcePath, out var file) ||
+                    !file.Exists ||
+                    file.LastWriteTimeUtc != src.LastWriteUtc ||
+                    file.Length != src.Length)
                     return false;
             }
 
@@ -1012,6 +1277,23 @@ public sealed class MasterDarkMaterializer(
         return File.WriteAllTextAsync(manifestPath, json, cancellationToken);
     }
 
+    private static async Task WriteManifestAtomicallyAsync(
+        string manifestPath,
+        MasterDarkManifest manifest,
+        CancellationToken cancellationToken)
+    {
+        var tempPath = manifestPath + ".tmp_" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await WriteManifestAsync(tempPath, manifest, cancellationToken);
+            File.Move(tempPath, manifestPath, overwrite: true);
+        }
+        finally
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+        }
+    }
+
     private static void RegisterMasterInPlan(
         ConcurrentBag<string> createdBag,
         object planLock,
@@ -1020,7 +1302,11 @@ public sealed class MasterDarkMaterializer(
         double exposureSeconds,
         string? binning,
         double? gain,
-        double? temperatureC)
+        double? offset,
+        double? temperatureC,
+        int width,
+        int height,
+        int channels)
     {
         createdBag.Add(filePath);
         lock (planLock)
@@ -1032,7 +1318,11 @@ public sealed class MasterDarkMaterializer(
                 ExposureTime = exposureSeconds,
                 Binning = binning,
                 Gain = gain,
-                Temperature = temperatureC
+                Offset = offset,
+                Temperature = temperatureC,
+                Width = width,
+                Height = height,
+                Channels = channels
             });
         }
     }

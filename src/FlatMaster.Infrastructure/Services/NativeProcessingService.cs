@@ -46,7 +46,7 @@ public sealed partial class NativeProcessingService(
         var io = new FitsImageIO(_logger);
         _logger.LogInformation("Native Processing Engine started");
         progress.Report("=== Native Processing Engine ===");
-        progress.Report($"Native parallel workers available: {Environment.ProcessorCount}");
+        progress.Report($"Native parallel worker limit: {plan.Configuration.MaxParallelism}");
 
         if (plan.Jobs.Count == 0)
         {
@@ -61,6 +61,9 @@ public sealed partial class NativeProcessingService(
 
         int successCount = 0;
         int failureCount = 0;
+        int successFileCount = 0;
+        int failureFileCount = 0;
+        var failedDirectories = new List<string>();
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         foreach (var job in plan.Jobs)
@@ -89,6 +92,8 @@ public sealed partial class NativeProcessingService(
                         {
                             progress.Report(string.Format(CultureInfo.InvariantCulture, "  ! No dark/bias for {0:F3}s - skipped", group.ExposureTime));
                             failureCount++;
+                            failureFileCount += group.FilePaths.Count;
+                            failedDirectories.Add(job.DirectoryPath);
                             continue;
                         }
 
@@ -106,12 +111,19 @@ public sealed partial class NativeProcessingService(
                         progress, cancellationToken);
 
                     successCount++;
+                    successFileCount += group.FilePaths.Count;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed group {Exp}s", group.ExposureTime);
                     progress.Report($"  ERROR: {ex.Message}");
                     failureCount++;
+                    failureFileCount += group.FilePaths.Count;
+                    failedDirectories.Add(job.DirectoryPath);
                 }
             }
         }
@@ -124,7 +136,13 @@ public sealed partial class NativeProcessingService(
         {
             Success = failureCount == 0,
             Output = summary,
-            ExitCode = failureCount == 0 ? 0 : 1
+            ExitCode = failureCount == 0 ? 0 : 1,
+            SucceededBatches = successCount,
+            FailedBatches = failureCount,
+            TotalBatches = successCount + failureCount,
+            SucceededFiles = successFileCount,
+            FailedFiles = failureFileCount,
+            FailedDirectories = failedDirectories.Distinct(StringComparer.OrdinalIgnoreCase).ToList()
         };
     }
 
@@ -142,7 +160,7 @@ public sealed partial class NativeProcessingService(
         // Sort file paths for deterministic processing order (matches PI's filesystem-order enumeration)
         var flatPaths = group.FilePaths.OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase).ToList();
         int n = flatPaths.Count;
-        int frameWorkers = Math.Max(1, Math.Min(Environment.ProcessorCount, n));
+        int frameWorkers = Math.Max(1, Math.Min(config.MaxParallelism, n));
         int reportEvery = Math.Max(1, n / 10);
         progress.Report(string.Format(CultureInfo.InvariantCulture, "  Loading {0} flat frames ({1:F3}s)...", n, group.ExposureTime));
         progress.Report($"  Native prepare stage: parallel workers={frameWorkers}");
@@ -190,16 +208,61 @@ public sealed partial class NativeProcessingService(
             if (done % reportEvery == 0 || done == n)
                 progress.Report($"  Calibrated {done}/{n} (latest: {Path.GetFileName(flatPaths[i])})");
         });
+        ValidateFrameGeometry(calibrated, flatPaths);
 
-        // 3. Normalise to multiplicative (divide each frame by its median - matches PI)
-        progress.Report($"  Normalising (multiplicative, median-based) with {frameWorkers} workers...");
+        // 3. Measure calibrated signal before multiplicative normalization. A near-zero
+        // frame would otherwise be scaled up dramatically and can force the resulting
+        // master onto the dark/noise-floor scale.
+        progress.Report($"  Measuring calibrated-flat signal with {frameWorkers} workers...");
         var medians = new double[n];
-        int normalizedCount = 0;
         Parallel.For(0, n, calibrationOptions, i =>
         {
             medians[i] = ComputeMedian(calibrated[i].Pixels);
-            if (Math.Abs(medians[i]) > 1e-15)
-                DividePixels(calibrated[i].Pixels, medians[i]);
+        });
+
+        var minimumMedian = Math.Max(1e-15, config.MinimumCalibratedFlatMedian);
+        var acceptedIndices = Enumerable.Range(0, n)
+            .Where(i => double.IsFinite(medians[i]) && medians[i] >= minimumMedian)
+            .ToArray();
+        var rejectedIndices = Enumerable.Range(0, n)
+            .Except(acceptedIndices)
+            .ToArray();
+
+        foreach (var index in rejectedIndices)
+        {
+            progress.Report(string.Format(
+                CultureInfo.InvariantCulture,
+                "  [quality] rejected low-signal calibrated flat: median={0:F8}, minimum={1:F8}, file={2}",
+                medians[index],
+                minimumMedian,
+                flatPaths[index]));
+        }
+
+        progress.Report(
+            $"  [quality] calibrated-flat signal check: accepted {acceptedIndices.Length}/{n}, rejected {rejectedIndices.Length}");
+        if (acceptedIndices.Length < 3)
+        {
+            throw new InvalidOperationException(
+                $"Only {acceptedIndices.Length} calibrated flats remain above the minimum signal " +
+                $"{minimumMedian:F8} after rejecting {rejectedIndices.Length} dark/no-signal frame(s); " +
+                "no meaningful master flat can be generated.");
+        }
+
+        if (rejectedIndices.Length > 0)
+        {
+            calibrated = acceptedIndices.Select(i => calibrated[i]).ToArray();
+            medians = acceptedIndices.Select(i => medians[i]).ToArray();
+            flatPaths = acceptedIndices.Select(i => flatPaths[i]).ToList();
+            n = calibrated.Length;
+            reportEvery = Math.Max(1, n / 10);
+        }
+
+        // 3b. Normalise to multiplicative (divide each retained frame by its median - matches PI)
+        progress.Report($"  Normalising {n} retained frame(s) (multiplicative, median-based) with {frameWorkers} workers...");
+        int normalizedCount = 0;
+        Parallel.For(0, n, calibrationOptions, i =>
+        {
+            DividePixels(calibrated[i].Pixels, medians[i]);
             int done = Interlocked.Increment(ref normalizedCount);
             if (done % reportEvery == 0 || done == n)
                 progress.Report($"  Normalized {done}/{n}");
@@ -207,7 +270,7 @@ public sealed partial class NativeProcessingService(
         progress.Report(string.Format(CultureInfo.InvariantCulture,
             "  Frame medians: [{0}]", string.Join(", ", medians.Select(m => m.ToString("F6", CultureInfo.InvariantCulture)))));
 
-        // 3b. Compute EqualizeFluxes rejection-normalization factors
+        // 3c. Compute EqualizeFluxes rejection-normalization factors
         //     After multiplicative normalization, each frame's median ~ 1.0.
         //     EqualizeFluxes additionally scales by refMean/frameMean so rejection
         //     testing uses equalized pixel values - matches PI's rejectionNormalization = EqualizeFluxes.
@@ -252,7 +315,7 @@ public sealed partial class NativeProcessingService(
             const double linearFitLow = 5.0;
             const double linearFitHigh = 3.5;
             progress.Report("  Integration algorithm: Linear Fit Clipping (large stack)");
-            var (fitSlopes, fitIntercepts) = ComputeLinearFitTransforms(calibrated, eqFactors);
+            var (fitSlopes, fitIntercepts) = ComputeLinearFitTransforms(calibrated, eqFactors, calibrationOptions);
             ImageStackingAlgorithms.LinearFitSigmaClipStack(
                 calibrated,
                 result,
@@ -269,7 +332,7 @@ public sealed partial class NativeProcessingService(
         double referenceMedian = medians[0];
         if (Math.Abs(referenceMedian) > 1e-15)
         {
-            Parallel.ForEach(Partitioner.Create(0L, pixelCount), range =>
+            Parallel.ForEach(Partitioner.Create(0L, pixelCount), calibrationOptions, range =>
             {
                 for (long p = range.Item1; p < range.Item2; p++)
                     result[p] *= referenceMedian;
@@ -315,9 +378,28 @@ public sealed partial class NativeProcessingService(
 
     private static Task WriteImageAsync(string path, FitsImageIO.ImageData image, string outputExt, CancellationToken ct)
     {
-        return outputExt == "fits"
-            ? FitsImageIO.WriteFitsAsync(path, image, ct)
-            : FitsImageIO.WriteXisfAsync(path, image, ct);
+        return WriteImageAtomicallyAsync(path, image, outputExt, ct);
+    }
+
+    private static async Task WriteImageAtomicallyAsync(
+        string path,
+        FitsImageIO.ImageData image,
+        string outputExt,
+        CancellationToken cancellationToken)
+    {
+        var tempPath = path + ".tmp_" + Guid.NewGuid().ToString("N");
+        try
+        {
+            if (outputExt == "fits")
+                await FitsImageIO.WriteFitsAsync(tempPath, image, cancellationToken);
+            else
+                await FitsImageIO.WriteXisfAsync(tempPath, image, cancellationToken);
+            File.Move(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+        }
     }
 
     // Pixel Math Helpers
@@ -351,7 +433,8 @@ public sealed partial class NativeProcessingService(
 
     private static (double[] Slopes, double[] Intercepts) ComputeLinearFitTransforms(
         FitsImageIO.ImageData[] frames,
-        double[] eqFactors)
+        double[] eqFactors,
+        ParallelOptions parallelOptions)
     {
         int n = frames.Length;
         var slopes = new double[n];
@@ -365,7 +448,7 @@ public sealed partial class NativeProcessingService(
         double refEqFactor = eqFactors.Length > 0 ? eqFactors[0] : 1.0;
         var referencePixels = frames[0].Pixels;
 
-        Parallel.For(1, n, i =>
+        Parallel.For(1, n, parallelOptions, i =>
         {
             var framePixels = frames[i].Pixels;
             double eq = eqFactors[i];
@@ -490,9 +573,28 @@ public sealed partial class NativeProcessingService(
 
     private static void ValidateDimensions(FitsImageIO.ImageData a, FitsImageIO.ImageData b, string context)
     {
-        if (a.Width != b.Width || a.Height != b.Height)
+        if (a.Width != b.Width || a.Height != b.Height || a.Channels != b.Channels)
             throw new InvalidOperationException(
-                $"Dimension mismatch: {a.Width}x{a.Height} vs {b.Width}x{b.Height} ({context})");
+                $"Dimension mismatch: {a.Width}x{a.Height}x{a.Channels} vs {b.Width}x{b.Height}x{b.Channels} ({context})");
+    }
+
+    private static void ValidateFrameGeometry(IReadOnlyList<FitsImageIO.ImageData> frames, IReadOnlyList<string> paths)
+    {
+        if (frames.Count == 0)
+            return;
+
+        var first = frames[0];
+        for (var index = 1; index < frames.Count; index++)
+        {
+            try
+            {
+                ValidateDimensions(first, frames[index], paths[index]);
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new InvalidOperationException($"Flat group contains incompatible image geometry: {ex.Message}", ex);
+            }
+        }
     }
 
     private static double ParseExposure(Dictionary<string, string> h)

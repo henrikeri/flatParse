@@ -54,11 +54,32 @@ public partial class MainViewModel
         foreach (var job in jobs)
         {
             var mappedGroups = new List<ExposureGroup>();
+            var groupedPassthroughPaths = job.ExposureGroups
+                .Where(group => group.FilePaths.Count < 3)
+                .SelectMany(group => group.FilePaths)
+                .Where(path => job.PassthroughFiles.Contains(path, StringComparer.OrdinalIgnoreCase))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var mappedPassthroughFiles = job.PassthroughFiles
+                .Where(path => !groupedPassthroughPaths.Contains(path))
+                .ToList();
+
             foreach (var group in job.ExposureGroups)
             {
                 var key = BuildGroupKey(job, group);
-                if (applyIncludeSelections && includeSelections.TryGetValue(key, out var include) && !include)
+                var include = includeSelections.TryGetValue(key, out var selectedByUser)
+                    ? selectedByUser
+                    : group.FilePaths.Count != 2;
+                if (applyIncludeSelections && !include)
                     continue;
+
+                var isPassthroughGroup = group.FilePaths.Count < 3 &&
+                    group.FilePaths.All(groupedPassthroughPaths.Contains);
+                if (isPassthroughGroup)
+                {
+                    mappedPassthroughFiles.AddRange(group.FilePaths);
+                    if (applyIncludeSelections)
+                        continue;
+                }
 
                 overrideSelections.TryGetValue(key, out var manualPath);
                 var criteria = (group.MatchingCriteria ?? new MatchingCriteria()) with
@@ -76,7 +97,7 @@ public partial class MainViewModel
                 });
             }
 
-            if (mappedGroups.Count == 0)
+            if (mappedGroups.Count == 0 && mappedPassthroughFiles.Count == 0)
                 continue;
 
             result.Add(new DirectoryJob
@@ -86,6 +107,9 @@ public partial class MainViewModel
                 OutputRootPath = job.OutputRootPath,
                 RelativeDirectory = job.RelativeDirectory,
                 ExposureGroups = mappedGroups,
+                PassthroughFiles = mappedPassthroughFiles
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
                 IsSelected = job.IsSelected
             });
         }
@@ -175,7 +199,19 @@ public partial class MainViewModel
                     .Select(d => d.TemperatureDeltaC!.Value)
                     .ToList();
 
-                var overrideOptions = new ObservableCollection<DarkOverrideOptionViewModel>(BuildOverrideOptions(group, selectedDarks));
+                var isPreservationOnly = group.FilePaths.Count < 3 &&
+                    group.FilePaths.All(path =>
+                        job.PassthroughFiles.Contains(path, StringComparer.OrdinalIgnoreCase));
+                var overrideOptions = isPreservationOnly
+                    ? new ObservableCollection<DarkOverrideOptionViewModel>(
+                    [
+                        new DarkOverrideOptionViewModel
+                        {
+                            DisplayName = "Not applicable - copied unchanged",
+                            DarkPath = null
+                        }
+                    ])
+                    : new ObservableCollection<DarkOverrideOptionViewModel>(BuildOverrideOptions(group, selectedDarks));
                 groupOverrideSelections.TryGetValue(key, out var selectedOverridePath);
                 var selectedOverride = overrideOptions.FirstOrDefault(o =>
                     string.Equals(o.DarkPath, selectedOverridePath, StringComparison.OrdinalIgnoreCase)) ?? overrideOptions.FirstOrDefault();
@@ -222,7 +258,17 @@ public partial class MainViewModel
                 var confidence = groupDiagnostics.Average(d => d.ConfidenceScore);
                 var hasMinimumFrames = group.FilePaths.Count >= 3;
                 var selectionReason = reasons.Count == 1 ? reasons[0] : $"Mixed ({reasons.Count})";
-                if (!hasMinimumFrames)
+                if (isPreservationOnly)
+                {
+                    selectedDarkDisplay = "Not required";
+                    selectionReason = group.FilePaths.Count == 1
+                        ? "Single file - copied unchanged"
+                        : "Two files - copied unchanged when included";
+                    tempDisplay = "Not applicable";
+                    groupDeltaC = null;
+                    confidence = 1.0;
+                }
+                else if (!hasMinimumFrames)
                     selectionReason = "[<3 flats] " + selectionReason;
 
                 groups.Add(new MatchingGroupViewModel
@@ -236,6 +282,8 @@ public partial class MainViewModel
                         : "Not available",
                     FileCount = group.FilePaths.Count,
                     HasMinimumFrames = hasMinimumFrames,
+                    IsPreservationOnly = isPreservationOnly,
+                    IsProcessable = hasMinimumFrames || isPreservationOnly,
                     SelectedDarkDisplay = selectedDarkDisplay,
                     SelectionReason = selectionReason,
                     TemperatureDeltaSortValue = groupDeltaC ?? double.PositiveInfinity,
@@ -245,9 +293,9 @@ public partial class MainViewModel
                     FlatFiles = new ObservableCollection<string>(
                         group.FilePaths.OrderBy(p => p, StringComparer.OrdinalIgnoreCase)),
                     OverrideOptions = overrideOptions,
-                    IsIncluded = groupIncludeSelections.TryGetValue(key, out var includeSelection)
-                        ? includeSelection
-                        : hasMinimumFrames,
+                    IsIncluded = groupIncludeSelections.TryGetValue(key, out var savedIncludeSelection)
+                        ? savedIncludeSelection
+                        : hasMinimumFrames || group.FilePaths.Count == 1,
                     SelectedOverride = selectedOverride
                 });
             }
@@ -268,10 +316,42 @@ public partial class MainViewModel
 
         var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var exposure = group.ExposureTime;
-        var potential = selectedDarks
+        var selected = selectedDarks.ToList();
+        var potential = selected
             .Where(d => d.Type is ImageType.MasterDark or ImageType.MasterDarkFlat or ImageType.Dark or ImageType.DarkFlat)
             .Where(d => Math.Abs(d.ExposureTime - exposure) <= 10.0)
             .ToList();
+
+        // Bias is the zero-second calibration candidate. It must be offered for
+        // every exposure instead of being filtered out by the dark-only +/-10s
+        // list above. Raw bias frames are intentionally not offered as manual
+        // single-frame overrides; the integrated master bias is the safe choice.
+        var criteriaGain = group.MatchingCriteria?.Gain;
+        foreach (var masterBias in selected
+                     .Where(d => d.Type is ImageType.MasterBias)
+                     .OrderBy(d => criteriaGain.HasValue && d.Gain.HasValue
+                         ? Math.Abs(d.Gain.Value - criteriaGain.Value)
+                         : double.PositiveInfinity)
+                     .ThenBy(d => d.FilePath, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!seenPaths.Add(masterBias.FilePath))
+                continue;
+
+            var binning = string.IsNullOrWhiteSpace(masterBias.Binning) ? "unknown binning" : "bin " + masterBias.Binning;
+            var gain = masterBias.Gain.HasValue
+                ? "gain " + masterBias.Gain.Value.ToString("0.###", CultureInfo.InvariantCulture)
+                : "unknown gain";
+            options.Add(new DarkOverrideOptionViewModel
+            {
+                DarkPath = masterBias.FilePath,
+                DisplayName = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Master bias (0 seconds): {0} ({1}, {2})",
+                    Path.GetFileName(masterBias.FilePath),
+                    binning,
+                    gain)
+            });
+        }
 
         foreach (var master in potential
                      .Where(d => d.Type is ImageType.MasterDark or ImageType.MasterDarkFlat)

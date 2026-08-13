@@ -31,6 +31,17 @@ namespace FlatMaster.WPF.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
+    public string ApplicationVersion
+    {
+        get
+        {
+            var version = typeof(MainViewModel).Assembly.GetName().Version;
+            return version == null ? "unknown" : $"{version.Major}.{version.Minor}.{version.Build}";
+        }
+    }
+
+    public string ApplicationDisplayName => $"FlatMaster v{ApplicationVersion}";
+
     private const double DarkTemperatureToleranceC = 1.0;
     private const double DarkInventoryTemperatureHysteresisC = 2.0;
     private static readonly Brush TabStepIdleBrush = CreateFrozenBrush("#607D8B");
@@ -333,7 +344,7 @@ public partial class MainViewModel : ObservableObject
         LoadUserSettingsFromDisk();
         RaiseTabWorkflowStateChanged();
 
-        Log($"FlatMaster v1.0.4 - Initialized at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        Log($"{ApplicationDisplayName} - Initialized at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         Log($"Session log: {_sessionLogPath}");
     }
 

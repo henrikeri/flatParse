@@ -1,6 +1,9 @@
 ﻿using System;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
+using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using FlatMaster.Core.Interfaces;
 using FlatMaster.Core.Models;
@@ -14,6 +17,33 @@ namespace FlatMaster.Tests.Services;
 
 public class MasterDarkMaterializerTests
 {
+    [Theory]
+    [InlineData(-10.9, -9.8, 1.0, true)]
+    [InlineData(-11.0, -9.0, 1.0, true)]
+    [InlineData(-11.1, -8.9, 1.0, false)]
+    [InlineData(-12.0, -8.0, 5.0, true)]
+    public void IsTemperatureSpreadAllowed_UsesToleranceAsPlusOrMinusRadius(
+        double minimum,
+        double maximum,
+        double toleranceRadius,
+        bool expected)
+    {
+        MasterDarkMaterializer.IsTemperatureSpreadAllowed([minimum, maximum], toleranceRadius)
+            .Should().Be(expected);
+    }
+
+    [Fact]
+    public void GetMaterializationTemperatureTolerance_HonorsConfiguredDarkDeltaLimit()
+    {
+        var options = new DarkMatchingOptions
+        {
+            MaxTempDeltaC = 1.0,
+            DarkOverBiasTempDeltaC = 5.0
+        };
+
+        MasterDarkMaterializer.GetMaterializationTemperatureTolerance(options).Should().Be(5.0);
+    }
+
     [Fact]
     public async Task PreviewDarksOnlyMaterializationAsync_GroupsByExposureAndTemperatureTolerance()
     {
@@ -74,6 +104,65 @@ public class MasterDarkMaterializerTests
             preview.Should().HaveCount(2);
             preview.Select(x => x.FrameCount).OrderBy(x => x).Should().Equal(1, 3);
             preview.All(x => x.ExposureSeconds == 25.0).Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task CanReuseExistingMasterAsync_NewSourceFrameInvalidatesManifest()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "FlatMasterTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var master = Path.Combine(root, "master.xisf");
+            var manifestPath = Path.Combine(root, "MasterDark.meta.json");
+            var first = Path.Combine(root, "dark1.fit");
+            var added = Path.Combine(root, "dark2.fit");
+            File.WriteAllText(master, "master");
+            File.WriteAllText(first, "one");
+            File.WriteAllText(added, "two");
+
+            var masterInfo = new FileInfo(master);
+            var firstInfo = new FileInfo(first);
+            var manifest = new MasterDarkManifest
+            {
+                PipelineVersion = 4,
+                Key = "key",
+                ExposureSeconds = 25,
+                MasterFileLength = masterInfo.Length,
+                MasterLastWriteUtc = masterInfo.LastWriteTimeUtc,
+                SourceFrames =
+                [
+                    new SourceFrameInfo
+                    {
+                        Path = first,
+                        LastWriteUtc = firstInfo.LastWriteTimeUtc,
+                        Length = firstInfo.Length
+                    }
+                ]
+            };
+            await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(manifest));
+
+            var reusableBeforeAddition = await MasterDarkMaterializer.CanReuseExistingMasterAsync(
+                master,
+                manifestPath,
+                "key",
+                new[] { first },
+                CancellationToken.None);
+            var reusableAfterAddition = await MasterDarkMaterializer.CanReuseExistingMasterAsync(
+                master,
+                manifestPath,
+                "key",
+                new[] { first, added },
+                CancellationToken.None);
+
+            reusableBeforeAddition.Should().BeTrue();
+            reusableAfterAddition.Should().BeFalse();
         }
         finally
         {

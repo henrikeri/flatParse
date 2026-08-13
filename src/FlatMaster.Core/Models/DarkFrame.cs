@@ -29,6 +29,9 @@ public sealed class DarkFrame
     public double? Gain { get; init; }
     public double? Offset { get; init; }
     public double? Temperature { get; set; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int Channels { get; init; } = 1;
     public bool IsSelected { get; set; } = true;
 
     /// <summary>

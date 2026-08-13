@@ -426,9 +426,10 @@ public partial class MainViewModel
             FlatDirectories.Add(new DirectoryJobViewModel(job));
         RegisterFlatDirectorySelectionTracking();
 
-        Log($"Flat scan complete: {_flatJobs.Count} directories with valid exposure groups");
+        Log($"Flat scan complete: {_flatJobs.Count} directories with processable or preserved image content");
         var totalFlats = _flatJobs.Sum(job => job.ExposureGroups.Sum(g => g.FilePaths.Count));
-        Log($"  Scanned {totalDirs} directories, found {totalFiles} image files (FITS={totalFits}, XISF={totalXisf}), {totalFlats} flats suitable");
+        var totalPassthrough = _flatJobs.Sum(job => job.PassthroughFiles.Count);
+        Log($"  Scanned {totalDirs} directories, found {totalFiles} image files (FITS={totalFits}, XISF={totalXisf}), {totalFlats} flats grouped, {totalPassthrough} files eligible for unchanged preservation");
 
         if (_flatJobs.Count == 0 && totalFiles > 0)
         {

@@ -53,6 +53,9 @@ public sealed partial class MetadataReaderService(
     [GeneratedRegex(@"</\s*(?:\w+:)?XISF\s*>", RegexOptions.IgnoreCase)]
     private static partial Regex XisfClosePattern();
 
+    [GeneratedRegex(@"<(?:\w+:)?Image\b[^>]*\bgeometry=""(\d+):(\d+)(?::(\d+))?""", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex XisfGeometryPattern();
+
     private static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".fits", ".fit", ".xisf"
@@ -337,6 +340,14 @@ public sealed partial class MetadataReaderService(
             headers[match.Groups[1].Value] = match.Groups[2].Value.Trim('\'', ' ');
         }
 
+        var geometry = XisfGeometryPattern().Match(xml);
+        if (geometry.Success)
+        {
+            headers["__WIDTH"] = geometry.Groups[1].Value;
+            headers["__HEIGHT"] = geometry.Groups[2].Value;
+            headers["__CHANNELS"] = geometry.Groups[3].Success ? geometry.Groups[3].Value : "1";
+        }
+
         return headers;
     }
 
@@ -370,6 +381,9 @@ public sealed partial class MetadataReaderService(
         string? filter = TryGetString(headers, FilterKeys);
         DateTime? obsDate = TryGetDateTime(headers, DateKeys);
         ImageType imageType = InferImageType(filePath, TryGetString(headers, ImageTypeKeys));
+        var width = TryGetInt(headers, ["NAXIS1", "__WIDTH"]);
+        var height = TryGetInt(headers, ["NAXIS2", "__HEIGHT"]);
+        var channels = TryGetInt(headers, ["NAXIS3", "__CHANNELS"]) ?? 1;
 
         return new ImageMetadata
         {
@@ -381,7 +395,10 @@ public sealed partial class MetadataReaderService(
             Offset = offset,
             Temperature = temp,
             Filter = filter,
-            ObservationDate = obsDate
+            ObservationDate = obsDate,
+            Width = width ?? 0,
+            Height = height ?? 0,
+            Channels = Math.Max(1, channels)
         };
     }
 
@@ -415,6 +432,14 @@ public sealed partial class MetadataReaderService(
             return result;
 
         return null;
+    }
+
+    private static int? TryGetInt(Dictionary<string, string> headers, string[] keys)
+    {
+        var str = TryGetString(headers, keys);
+        return int.TryParse(str, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result)
+            ? result
+            : null;
     }
 
     private static DateTime? TryGetDateTime(Dictionary<string, string> headers, string[] keys)
@@ -463,17 +488,30 @@ public sealed partial class MetadataReaderService(
     private static ImageType InferImageType(string filePath, string? headerType)
     {
         var fileName = Path.GetFileName(filePath).ToUpperInvariant();
+        var normalizedFileName = new string(fileName.Where(char.IsLetterOrDigit).ToArray());
         var typeStr = headerType?.ToUpperInvariant() ?? "";
 
-        if (fileName.Contains("MASTERDARKFLAT") || typeStr.Contains("MASTER DARK FLAT"))
+        // An explicit master type in the filename is authoritative. Integration
+        // tools can preserve or append contradictory IMAGETYP cards (for example
+        // MasterBias.xisf containing a later "Master Dark" card).
+        if (normalizedFileName.Contains("MASTERDARKFLAT"))
             return ImageType.MasterDarkFlat;
-        if (fileName.Contains("MASTERDARK") || typeStr.Contains("MASTER DARK"))
-            return ImageType.MasterDark;
-        if (fileName.Contains("MASTERFLAT") || typeStr.Contains("MASTER FLAT"))
-            return ImageType.MasterFlat;
-        if (fileName.Contains("MASTERBIAS") || typeStr.Contains("MASTER BIAS"))
+        if (normalizedFileName.Contains("MASTERBIAS"))
             return ImageType.MasterBias;
-        if (fileName.Contains("DARKFLAT") || typeStr.Contains("DARK FLAT"))
+        if (normalizedFileName.Contains("MASTERDARK"))
+            return ImageType.MasterDark;
+        if (normalizedFileName.Contains("MASTERFLAT"))
+            return ImageType.MasterFlat;
+
+        if (typeStr.Contains("MASTER DARK FLAT"))
+            return ImageType.MasterDarkFlat;
+        if (typeStr.Contains("MASTER BIAS"))
+            return ImageType.MasterBias;
+        if (typeStr.Contains("MASTER DARK"))
+            return ImageType.MasterDark;
+        if (typeStr.Contains("MASTER FLAT"))
+            return ImageType.MasterFlat;
+        if (normalizedFileName.Contains("DARKFLAT") || typeStr.Contains("DARK FLAT"))
             return ImageType.DarkFlat;
         if (fileName.Contains("DARK") || typeStr.Contains("DARK"))
             return ImageType.Dark;

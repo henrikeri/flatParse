@@ -100,4 +100,43 @@ public class ProcessingReportServiceTests
                 Directory.Delete(outputRoot, true);
         }
     }
+
+    [Fact]
+    public void GenerateReport_UsesActualExecutionCountsInsteadOfDarkMatchPredictions()
+    {
+        var service = new ProcessingReportService(new Mock<ILogger<ProcessingReportService>>().Object);
+        var outputRoot = Path.Combine(Path.GetTempPath(), "FlatMasterTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outputRoot);
+        try
+        {
+            var report = service.GenerateReport(
+                DateTime.UtcNow,
+                [],
+                [],
+                new ProcessingConfiguration { PixInsightExecutable = "PixInsight.exe" },
+                new OutputPathConfiguration
+                {
+                    Mode = OutputMode.ReplicatedSeparateTree,
+                    OutputRootPath = outputRoot
+                },
+                new FlatMaster.Core.Interfaces.ProcessingResult
+                {
+                    Success = false,
+                    ExitCode = 1,
+                    Output = "failed",
+                    SucceededFiles = 22415,
+                    FailedFiles = 36,
+                    FailedDirectories = [@"C:\flats\failed"]
+                });
+
+            report.TotalFlatsProcessed.Should().Be(22451);
+            report.FlatsSucceeded.Should().Be(22415);
+            report.FlatsFailed.Should().Be(36);
+            report.Errors.Should().ContainSingle().Which.Should().Contain(@"C:\flats\failed");
+        }
+        finally
+        {
+            Directory.Delete(outputRoot, true);
+        }
+    }
 }

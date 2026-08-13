@@ -10,8 +10,12 @@ public sealed class MasterDarkManifest
     public string? CameraId { get; init; }
     public string? Binning { get; init; }
     public double? Gain { get; init; }
+    public double? Offset { get; init; }
     public int Width { get; init; }
     public int Height { get; init; }
+    public int Channels { get; init; } = 1;
+    public long MasterFileLength { get; init; }
+    public DateTime MasterLastWriteUtc { get; init; }
     public double? TemperatureMedianC { get; init; }
     public required List<SourceFrameInfo> SourceFrames { get; init; }
     public DateTime CreatedUtc { get; init; } = DateTime.UtcNow;
@@ -21,5 +25,6 @@ public sealed class SourceFrameInfo
 {
     public required string Path { get; init; }
     public required DateTime LastWriteUtc { get; init; }
+    public long Length { get; init; }
     public string? Hash { get; init; }
 }

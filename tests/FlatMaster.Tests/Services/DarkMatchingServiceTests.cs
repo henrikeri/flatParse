@@ -115,7 +115,7 @@ public class DarkMatchingServiceTests
         result.Should().NotBeNull();
         result!.FilePath.Should().Be("master_12s.xisf");
         result.MatchKind.Should().StartWith("P5");
-        result.OptimizeRequired.Should().BeFalse();
+        result.OptimizeRequired.Should().BeTrue();
     }
 
     [Fact]
@@ -132,6 +132,108 @@ public class DarkMatchingServiceTests
         result.Should().NotBeNull();
         result!.FilePath.Should().Be("raw_12s.fit");
         result.MatchKind.Should().StartWith("P6");
+        result.OptimizeRequired.Should().BeTrue();
+    }
+
+    [Fact]
+    public void FindBestDark_LongDeltaOptimizationDisabled_DoesNotUseP5OrP6()
+    {
+        var result = _service.FindBestDark(
+            MakeGroup(20.0),
+            [
+                new() { FilePath = "master_12s.xisf", Type = ImageType.MasterDark, ExposureTime = 12.0 },
+                new() { FilePath = "masterbias.xisf", Type = ImageType.MasterBias, ExposureTime = 0.0 }
+            ],
+            new DarkMatchingOptions { AllowNearestExposureWithOptimize = false });
+
+        result.Should().NotBeNull();
+        result!.FilePath.Should().Be("masterbias.xisf");
+        result.MatchKind.Should().StartWith("P7");
+    }
+
+    [Fact]
+    public void FindBestDark_EnforceBinning_RejectsKnownMismatch()
+    {
+        var group = MakeGroup(10.0, binning: "1");
+        var result = _service.FindBestDark(
+            group,
+            [
+                new() { FilePath = "wrong_bin.xisf", Type = ImageType.MasterDark, ExposureTime = 10.0, Binning = "2" },
+                new() { FilePath = "masterbias.xisf", Type = ImageType.MasterBias, ExposureTime = 0.0, Binning = "1" }
+            ],
+            new DarkMatchingOptions { EnforceBinning = true });
+
+        result.Should().NotBeNull();
+        result!.FilePath.Should().Be("masterbias.xisf");
+    }
+
+    [Fact]
+    public void FindBestDark_KnownFlatGeometry_RejectsIncompatibleExactDark()
+    {
+        var group = new ExposureGroup
+        {
+            ExposureTime = 20.0,
+            FilePaths = ["f1.fit", "f2.fit", "f3.fit"],
+            MatchingCriteria = new MatchingCriteria
+            {
+                Temperature = -10.0,
+                Width = 1936,
+                Height = 1096,
+                Channels = 1
+            }
+        };
+
+        var result = _service.FindBestDark(
+            group,
+            [
+                new()
+                {
+                    FilePath = "wrong_9576x6388.xisf",
+                    Type = ImageType.MasterDark,
+                    ExposureTime = 20.0,
+                    Temperature = -10.0,
+                    Width = 9576,
+                    Height = 6388,
+                    Channels = 1
+                },
+                new()
+                {
+                    FilePath = "right_1936x1096.xisf",
+                    Type = ImageType.MasterDark,
+                    ExposureTime = 20.0,
+                    Temperature = -10.0,
+                    Width = 1936,
+                    Height = 1096,
+                    Channels = 1
+                }
+            ],
+            new DarkMatchingOptions());
+
+        result.Should().NotBeNull();
+        result!.FilePath.Should().Be("right_1936x1096.xisf");
+    }
+
+    [Fact]
+    public void FindBestDark_KnownFlatGeometry_FailsClosedWhenDarkGeometryIsUnknown()
+    {
+        var group = new ExposureGroup
+        {
+            ExposureTime = 20.0,
+            FilePaths = ["f1.fit", "f2.fit", "f3.fit"],
+            MatchingCriteria = new MatchingCriteria
+            {
+                Width = 1936,
+                Height = 1096,
+                Channels = 1
+            }
+        };
+
+        var result = _service.FindBestDark(
+            group,
+            [new() { FilePath = "unknown.xisf", Type = ImageType.MasterDark, ExposureTime = 20.0 }],
+            new DarkMatchingOptions());
+
+        result.Should().BeNull();
     }
 
     [Fact]
@@ -289,6 +391,78 @@ public class DarkMatchingServiceTests
     }
 
     [Fact]
+    public void FindBestDark_TemperatureCompatibleDarkStillHonorsExposureGuard()
+    {
+        var result = _service.FindBestDark(
+            MakeGroup(10.0, -10.0),
+            [
+                new() { FilePath = "master_16s_-10C.xisf", Type = ImageType.MasterDark, ExposureTime = 16.0, Temperature = -10.0 },
+                new() { FilePath = "masterbias.xisf", Type = ImageType.MasterBias, ExposureTime = 0.0 }
+            ],
+            new DarkMatchingOptions
+            {
+                MaxTempDeltaC = 5.0,
+                DarkOverBiasTempDeltaC = 5.0,
+                DarkOverBiasExposureDeltaSeconds = 5.0
+            });
+
+        result.Should().NotBeNull();
+        result!.FilePath.Should().Be("masterbias.xisf");
+        result.MatchKind.Should().Contain("exceeds 5s");
+    }
+
+    [Fact]
+    public void FindBestDark_LowExposure_PrefersZeroSecondBiasOverFartherDark()
+    {
+        var result = _service.FindBestDark(
+            MakeGroup(0.1, -10.0),
+            [
+                new() { FilePath = "master_5s_-10C.xisf", Type = ImageType.MasterDark, ExposureTime = 5.0, Temperature = -10.0 },
+                new() { FilePath = "masterbias.xisf", Type = ImageType.MasterBias, ExposureTime = 0.0 }
+            ],
+            new DarkMatchingOptions
+            {
+                MaxTempDeltaC = 5.0,
+                DarkOverBiasTempDeltaC = 5.0,
+                DarkOverBiasExposureDeltaSeconds = 5.0
+            });
+
+        result.Should().NotBeNull();
+        result!.FilePath.Should().Be("masterbias.xisf");
+        result.MatchKind.Should().Contain("closer exposure");
+        result.OptimizeRequired.Should().BeFalse();
+    }
+
+    [Fact]
+    public void FindBestDark_ExactLowExposureDark_BeatsBias()
+    {
+        var result = _service.FindBestDark(
+            MakeGroup(0.1, -10.0),
+            [
+                new() { FilePath = "master_0p1s_-10C.xisf", Type = ImageType.MasterDark, ExposureTime = 0.1, Temperature = -10.0 },
+                new() { FilePath = "masterbias.xisf", Type = ImageType.MasterBias, ExposureTime = 0.0 }
+            ],
+            new DarkMatchingOptions());
+
+        result.Should().NotBeNull();
+        result!.FilePath.Should().Be("master_0p1s_-10C.xisf");
+        result.MatchKind.Should().StartWith("P1");
+    }
+
+    [Fact]
+    public void FindBestDark_BiasWithKnownBinningMismatch_IsNotUsed()
+    {
+        var result = _service.FindBestDark(
+            MakeGroup(0.1, binning: "1"),
+            [
+                new() { FilePath = "wrong_bin_masterbias.xisf", Type = ImageType.MasterBias, ExposureTime = 0.0, Binning = "2" }
+            ],
+            new DarkMatchingOptions { EnforceBinning = true });
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
     public void FindBestDark_ManualOverride_UsesSpecifiedDark()
     {
         var result = _service.FindBestDark(
@@ -356,7 +530,11 @@ public class DarkMatchingServiceTests
         File.Exists(dumpPath).Should().BeFalse();
     }
 
-    private static ExposureGroup MakeGroup(double exposureTime, double? temperature = null, string? manualDarkPath = null)
+    private static ExposureGroup MakeGroup(
+        double exposureTime,
+        double? temperature = null,
+        string? manualDarkPath = null,
+        string? binning = null)
     {
         return new ExposureGroup
         {
@@ -364,6 +542,7 @@ public class DarkMatchingServiceTests
             FilePaths = ["f1.fit", "f2.fit", "f3.fit"],
             MatchingCriteria = new MatchingCriteria
             {
+                Binning = binning,
                 Temperature = temperature,
                 ManualDarkPath = manualDarkPath
             }

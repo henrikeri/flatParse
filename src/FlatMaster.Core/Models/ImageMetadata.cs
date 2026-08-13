@@ -31,6 +31,9 @@ public sealed record ImageMetadata
     public double? Temperature { get; init; }
     public string? Filter { get; init; }
     public DateTime? ObservationDate { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int Channels { get; init; } = 1;
 
     /// <summary>
     /// Format exposure time for consistent display (3 decimal places, strip trailing zeros)

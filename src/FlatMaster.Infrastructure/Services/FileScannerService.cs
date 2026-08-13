@@ -117,7 +117,20 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                 });
 
                 var groups = GroupByExposure(imageFiles, metadata);
-                if (groups.Count == 0)
+
+                // Exposure groups below the three-frame integration minimum
+                // are preservation candidates. Single-frame groups are
+                // selected by default; two-frame groups can be selected by the
+                // user. The whole-directory fallback also covers an existing
+                // generated master or unreadable metadata.
+                var passthroughFiles = groups
+                    .Where(group => group.FilePaths.Count < 3)
+                    .SelectMany(group => group.FilePaths)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (imageFiles.Count == 1 && passthroughFiles.Count == 0)
+                    passthroughFiles.Add(imageFiles[0]);
+                if (groups.Count == 0 && passthroughFiles.Count == 0)
                 {
                     seenDirectories.Add(directory);
                     continue;
@@ -130,7 +143,8 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                     BaseRootPath = baseRoot,
                     OutputRootPath = outputRoot,
                     RelativeDirectory = relative,
-                    ExposureGroups = groups
+                    ExposureGroups = groups,
+                    PassthroughFiles = passthroughFiles
                 };
 
                 jobs.Add(job);
@@ -172,10 +186,12 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                 continue;
             }
 
-            // Pre-scan for master darks and manifests which may live under skipped directories
+            // Pre-scan for master darks/biases and manifests which may live under skipped directories
             try
             {
-                // 1) Find master files by naming convention
+                // 1) Find master dark and master bias files by naming convention.
+                // Metadata is still authoritative; the normalized filename check
+                // simply makes "Master Bias", "master_bias", etc. discoverable.
                 cancellationToken.ThrowIfCancellationRequested();
                 var masterCandidates = new List<string>();
                 foreach (var ext in new[] { ".xisf", ".fit", ".fits" })
@@ -183,10 +199,11 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                     cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
-                        foreach (var path in Directory.EnumerateFiles(darkRoot, "*MasterDark*" + ext, SearchOption.AllDirectories))
+                        foreach (var path in Directory.EnumerateFiles(darkRoot, "*Master*" + ext, SearchOption.AllDirectories))
                         {
                             cancellationToken.ThrowIfCancellationRequested();
-                            masterCandidates.Add(path);
+                            if (IsNamedMasterDarkOrBias(path))
+                                masterCandidates.Add(path);
                         }
                     }
                     catch (UnauthorizedAccessException) { }
@@ -222,6 +239,7 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                                         if (!m.Temperature.HasValue && manifest.TemperatureMedianC.HasValue) appliedFields.Add("Temperature");
                                         if (string.IsNullOrWhiteSpace(m.Binning) && !string.IsNullOrWhiteSpace(manifest.Binning)) appliedFields.Add("Binning");
                                         if (!m.Gain.HasValue && manifest.Gain.HasValue) appliedFields.Add("Gain");
+                                        if (m.Width <= 0 && manifest.Width > 0) appliedFields.Add("Geometry");
 
                                         m = m with
                                         {
@@ -229,6 +247,10 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                                             Temperature = m.Temperature ?? manifest.TemperatureMedianC,
                                             Binning = string.IsNullOrWhiteSpace(m.Binning) ? manifest.Binning : m.Binning,
                                             Gain = m.Gain ?? manifest.Gain,
+                                            Offset = m.Offset ?? manifest.Offset,
+                                            Width = m.Width > 0 ? m.Width : manifest.Width,
+                                            Height = m.Height > 0 ? m.Height : manifest.Height,
+                                            Channels = m.Channels > 0 ? m.Channels : manifest.Channels,
                                             Type = ImageType.MasterDark
                                         };
 
@@ -252,6 +274,9 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                             Gain = m.Gain,
                             Offset = m.Offset,
                             Temperature = m.Temperature,
+                            Width = m.Width,
+                            Height = m.Height,
+                            Channels = m.Channels,
                             DarkGroupFolder = FindDarksAncestor(path)
                         });
                         addedPaths.Add(path);
@@ -318,6 +343,16 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                                 m = m with { Gain = manifest.Gain };
                                 applied = true;
                             }
+                            if (m.Width <= 0 && manifest.Width > 0)
+                            {
+                                m = m with
+                                {
+                                    Width = manifest.Width,
+                                    Height = manifest.Height,
+                                    Channels = manifest.Channels
+                                };
+                                applied = true;
+                            }
 
                             if (applied)
                             {
@@ -337,6 +372,9 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                                 Gain = m.Gain,
                                 Offset = m.Offset,
                                 Temperature = m.Temperature,
+                                Width = m.Width,
+                                Height = m.Height,
+                                Channels = m.Channels,
                                 DarkGroupFolder = FindDarksAncestor(path)
                             });
                             addedPaths.Add(path);
@@ -350,7 +388,7 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Pre-scan for master darks under '{Root}' failed: {Msg}", darkRoot, ex.Message);
+                _logger.LogDebug(ex, "Pre-scan for master darks/biases under '{Root}' failed: {Msg}", darkRoot, ex.Message);
             }
 
             // Regular directory scan
@@ -406,6 +444,9 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                         Gain = meta.Gain,
                         Offset = meta.Offset,
                         Temperature = meta.Temperature,
+                        Width = meta.Width,
+                        Height = meta.Height,
+                        Channels = meta.Channels,
                         DarkGroupFolder = FindDarksAncestor(path)
                     });
                     addedPaths.Add(path);
@@ -527,10 +568,20 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
         }
     }
 
+    private sealed record FlatGroupKey(
+        string Exposure,
+        string Filter,
+        string Binning,
+        string Gain,
+        string Offset,
+        int Width,
+        int Height,
+        int Channels);
+
     private static List<ExposureGroup> GroupByExposure(List<string> filePaths, Dictionary<string, ImageMetadata> metadata)
     {
-        var groups = new Dictionary<string, List<string>>();
-        var representativeMetadata = new Dictionary<string, ImageMetadata>();
+        var groups = new Dictionary<FlatGroupKey, List<string>>();
+        var representativeMetadata = new Dictionary<FlatGroupKey, ImageMetadata>();
 
         foreach (var path in filePaths)
         {
@@ -538,8 +589,18 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                 continue;
             if (IsDarkType(meta.Type))
                 continue;
+            if (IsGeneratedMasterFlat(Path.GetFileName(path)))
+                continue;
 
-            var key = meta.ExposureKey;
+            var key = new FlatGroupKey(
+                meta.ExposureKey,
+                NormalizeGroupText(meta.Filter),
+                NormalizeGroupText(meta.Binning),
+                NormalizeGroupNumber(meta.Gain),
+                NormalizeGroupNumber(meta.Offset),
+                meta.Width,
+                meta.Height,
+                meta.Channels);
             if (!groups.TryGetValue(key, out List<string>? value))
             {
                 value = [];
@@ -551,7 +612,14 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
         }
 
         return [.. groups
-            .OrderBy(kvp => double.Parse(kvp.Key.TrimEnd('s'), CultureInfo.InvariantCulture))
+            .OrderBy(kvp => double.Parse(kvp.Key.Exposure.TrimEnd('s'), CultureInfo.InvariantCulture))
+            .ThenBy(kvp => kvp.Key.Filter, StringComparer.Ordinal)
+            .ThenBy(kvp => kvp.Key.Binning, StringComparer.Ordinal)
+            .ThenBy(kvp => kvp.Key.Gain, StringComparer.Ordinal)
+            .ThenBy(kvp => kvp.Key.Offset, StringComparer.Ordinal)
+            .ThenBy(kvp => kvp.Key.Width)
+            .ThenBy(kvp => kvp.Key.Height)
+            .ThenBy(kvp => kvp.Key.Channels)
             .Select(kvp =>
             {
                 var meta = representativeMetadata[kvp.Key];
@@ -575,17 +643,35 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
                         Binning = meta.Binning,
                         Gain = meta.Gain,
                         Offset = meta.Offset,
-                        Temperature = avgTemperatureOrNull ?? meta.Temperature
+                        Temperature = avgTemperatureOrNull ?? meta.Temperature,
+                        Width = meta.Width,
+                        Height = meta.Height,
+                        Channels = meta.Channels
                     }
                 };
             })];
     }
+
+    private static string NormalizeGroupText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? "<unknown>" : value.Trim().ToUpperInvariant();
+
+    private static string NormalizeGroupNumber(double? value)
+        => value.HasValue ? value.Value.ToString("R", CultureInfo.InvariantCulture) : "<unknown>";
 
     private static bool ShouldSkipDirectory(string dirName)
         => dirName.StartsWith('.') || SkipDirectories.Contains(dirName);
 
     private static bool IsGeneratedMasterFlat(string fileName)
         => GeneratedMasterFlatRegex.IsMatch(fileName);
+
+    private static bool IsNamedMasterDarkOrBias(string filePath)
+    {
+        var normalizedName = new string(Path.GetFileNameWithoutExtension(filePath)
+            .Where(char.IsLetterOrDigit)
+            .ToArray());
+        return normalizedName.Contains("masterdark", StringComparison.OrdinalIgnoreCase) ||
+               normalizedName.Contains("masterbias", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool HasExtension(string filePath, string extension)
         => string.Equals(Path.GetExtension(filePath), extension, StringComparison.OrdinalIgnoreCase);
@@ -601,7 +687,10 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
     /// </summary>
     private void BackfillMissingTemperatures(List<DarkFrame> darkFrames)
     {
-        var needTemp = darkFrames.Where(d => !d.Temperature.HasValue).ToList();
+        var needTemp = darkFrames
+            .Where(d => d.Type is ImageType.MasterDark or ImageType.MasterDarkFlat)
+            .Where(d => !d.Temperature.HasValue)
+            .ToList();
         if (needTemp.Count == 0) return;
 
         var haveTemp = darkFrames.Where(d => d.Temperature.HasValue).ToList();
@@ -614,9 +703,15 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
         int filled = 0;
         foreach (var dark in needTemp)
         {
-            // Find sub-frame darks with same binning that have temperature
+            // Infer only from raw sibling frames with the same calibration identity.
             var donors = haveTemp
+                .Where(d => d.Type is ImageType.Dark or ImageType.DarkFlat)
                 .Where(d => string.Equals(d.Binning, dark.Binning, StringComparison.OrdinalIgnoreCase))
+                .Where(d => Math.Abs(d.ExposureTime - dark.ExposureTime) < 0.001)
+                .Where(d => NullableValuesMatch(d.Gain, dark.Gain, 0.01))
+                .Where(d => NullableValuesMatch(d.Offset, dark.Offset, 0.5))
+                .Where(d => GeometryMatches(d, dark))
+                .Where(d => AreSiblingDarkFrames(d, dark))
                 .Select(d => d.Temperature!.Value)
                 .OrderBy(t => t)
                 .ToList();
@@ -624,7 +719,10 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
             if (donors.Count > 0)
             {
                 // Use median temperature
-                var median = donors[donors.Count / 2];
+                var middle = donors.Count / 2;
+                var median = donors.Count % 2 == 0
+                    ? (donors[middle - 1] + donors[middle]) / 2.0
+                    : donors[middle];
                 dark.Temperature = median;
                 filled++;
             }
@@ -633,6 +731,29 @@ public sealed partial class FileScannerService(IMetadataReaderService metadataRe
         if (filled > 0)
             _logger.LogInformation("Backfilled temperature for {Filled}/{Total} darks (inferred from sub-frame siblings)",
                 filled, needTemp.Count);
+    }
+
+    private static bool NullableValuesMatch(double? left, double? right, double tolerance)
+        => !left.HasValue || !right.HasValue || Math.Abs(left.Value - right.Value) < tolerance;
+
+    private static bool GeometryMatches(DarkFrame left, DarkFrame right)
+        => left.Width <= 0 || right.Width <= 0 ||
+           (left.Width == right.Width && left.Height == right.Height && left.Channels == right.Channels);
+
+    private static bool AreSiblingDarkFrames(DarkFrame left, DarkFrame right)
+    {
+        if (!string.IsNullOrWhiteSpace(left.DarkGroupFolder) && !string.IsNullOrWhiteSpace(right.DarkGroupFolder))
+        {
+            return string.Equals(
+                Path.GetFullPath(left.DarkGroupFolder),
+                Path.GetFullPath(right.DarkGroupFolder),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(
+            Path.GetDirectoryName(Path.GetFullPath(left.FilePath)),
+            Path.GetDirectoryName(Path.GetFullPath(right.FilePath)),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetProcessedSiblingPath(string basePath)

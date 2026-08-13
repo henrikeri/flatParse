@@ -37,4 +37,27 @@ public class MasterDarkPathingTests
 
         path.Replace('/', '\\').Should().EndWith("Master\\Darks\\25.5s\\Unknown");
     }
+
+    [Fact]
+    public void BuildMasterDarkOutputDirectory_SeparatesCalibrationIdentities()
+    {
+        var first = MasterDarkPathing.BuildMasterDarkOutputDirectory("D:\\fmOutput", 25, -10, "1", 100, 20);
+        var second = MasterDarkPathing.BuildMasterDarkOutputDirectory("D:\\fmOutput", 25, -10, "1", 100, 30);
+
+        first.Should().NotBe(second);
+        first.Replace('/', '\\').Should().EndWith("25s\\-10degC\\Bin1_Gain100_Offset20");
+    }
+
+    [Fact]
+    public void BuildMasterDarkOutputDirectory_SeparatesImageGeometries()
+    {
+        var full = MasterDarkPathing.BuildMasterDarkOutputDirectory(
+            "D:\\fmOutput", 20, -10, "1", 100, 20, 9576, 6388, 1);
+        var roi = MasterDarkPathing.BuildMasterDarkOutputDirectory(
+            "D:\\fmOutput", 20, -10, "1", 100, 20, 1936, 1096, 1);
+
+        full.Should().NotBe(roi);
+        full.Replace('/', '\\').Should().EndWith("Bin1_Gain100_Offset20_Res9576x6388x1");
+        roi.Replace('/', '\\').Should().EndWith("Bin1_Gain100_Offset20_Res1936x1096x1");
+    }
 }

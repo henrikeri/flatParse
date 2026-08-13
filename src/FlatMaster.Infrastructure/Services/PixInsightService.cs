@@ -60,6 +60,9 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                         gain = g.MatchingCriteria?.Gain,
                         offset = g.MatchingCriteria?.Offset,
                         temp = g.MatchingCriteria?.Temperature,
+                        width = g.MatchingCriteria?.Width,
+                        height = g.MatchingCriteria?.Height,
+                        channels = g.MatchingCriteria?.Channels,
                         manualDarkPath = string.IsNullOrWhiteSpace(g.MatchingCriteria?.ManualDarkPath)
                             ? null
                             : NormalizePath(g.MatchingCriteria!.ManualDarkPath!)
@@ -74,7 +77,10 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                 binning = d.Binning,
                 gain = d.Gain,
                 offset = d.Offset,
-                temp = d.Temperature
+                temp = d.Temperature,
+                width = d.Width,
+                height = d.Height,
+                channels = d.Channels
             }).ToArray(),
             match = new
             {
@@ -92,13 +98,16 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
             outputExtension = NormalizeOutputExtension(plan.Configuration.OutputFileExtension),
             xisfHintsCal = plan.Configuration.XisfHintsCal,
             xisfHintsMaster = plan.Configuration.XisfHintsMaster,
+            minimumCalibratedFlatMedian = plan.Configuration.MinimumCalibratedFlatMedian,
+            flatSignalSampleGrid = plan.Configuration.FlatSignalSampleGrid,
             rejection = new
             {
                 lowSigma = plan.Configuration.Rejection.LowSigma,
                 highSigma = plan.Configuration.Rejection.HighSigma
             },
             sentinelPath,
-            deleteCalibrated = plan.Configuration.DeleteCalibratedFlats
+            deleteCalibrated = plan.Configuration.DeleteCalibratedFlats,
+            requireDarks = plan.Configuration.RequireDarks
         };
 
         // Use UnsafeRelaxedJsonEscaping so paths come through cleanly as forward slashes
@@ -135,12 +144,12 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
         IProgress<string>? logOutput = null,
         CancellationToken cancellationToken = default)
     {
-        if (!File.Exists(pixInsightExe))
-            return MissingPixInsightExecutableResult(pixInsightExe);
-
         var jobList = BuildPixInsightEligibleJobs(plan.SelectedJobs, logOutput);
         if (jobList.Count == 0)
             return NoJobsResult();
+
+        if (!File.Exists(pixInsightExe))
+            return MissingPixInsightExecutableResult(pixInsightExe);
 
         // Force one folder per PixInsight invocation to avoid large multi-folder batches.
         if (batchSize != 1)
@@ -158,6 +167,8 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
         // Batch loop
         int totalBatches = (jobList.Count + batchSize - 1) / batchSize;
         int succeeded = 0, failed = 0;
+        int succeededFiles = 0, failedFiles = 0;
+        var failedDirectories = new List<string>();
         var allOutput = new StringBuilder();
         int totalFiles = jobList.Sum(j => j.TotalFileCount);
         int filesProcessedSoFar = 0;
@@ -183,13 +194,21 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                 logOutput,
                 cancellationToken);
 
-            // Generated script created (not persisted for debug in normal mode)
-
             TryDeleteFile(sentinelPath);
-            KillExistingPixInsightProcesses(logOutput);
+            TryDeleteFile(sentinelPath + ".progress");
 
-            var batchResult = await ExecuteWithVariantsAsync(
-                scriptPath, pixInsightExe, sentinelPath, "OK", logOutput, cancellationToken);
+            ProcessingResult batchResult;
+            try
+            {
+                batchResult = await ExecuteWithVariantsAsync(
+                    scriptPath, pixInsightExe, sentinelPath, "OK", logOutput, cancellationToken);
+            }
+            finally
+            {
+                TryDeleteFile(scriptPath);
+                TryDeleteFile(sentinelPath);
+                TryDeleteFile(sentinelPath + ".progress");
+            }
             allOutput.AppendLine(batchResult.Output);
             if (!batchResult.Success)
             {
@@ -198,18 +217,19 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
             if (batchResult.Success)
             {
                 succeeded++;
+                succeededFiles += batchFiles;
                 filesProcessedSoFar += batchFiles;
                 logOutput?.Report($"  [OK] Folders {firstIdx}-{lastIdx} done ({filesProcessedSoFar}/{totalFiles} files)");
             }
             else
             {
                 failed++;
+                failedFiles += batchFiles;
+                failedDirectories.AddRange(batchJobs.Select(job => job.DirectoryPath));
                 filesProcessedSoFar += batchFiles; // count them even on failure for progress
                 logOutput?.Report($"  [FAILED] Folders {firstIdx}-{lastIdx} FAILED: {batchResult.ErrorMessage}");
             }
         }
-
-        KillExistingPixInsightProcesses(null); // clean up
 
         bool allOk = failed == 0;
         return new ProcessingResult
@@ -220,7 +240,10 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
             ErrorMessage = allOk ? null : $"{failed}/{totalBatches} batches failed.",
             SucceededBatches = succeeded,
             FailedBatches = failed,
-            TotalBatches = totalBatches
+            TotalBatches = totalBatches,
+            SucceededFiles = succeededFiles,
+            FailedFiles = failedFiles,
+            FailedDirectories = failedDirectories
         };
     }
 
@@ -298,6 +321,7 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                 OutputRootPath = job.OutputRootPath,
                 RelativeDirectory = job.RelativeDirectory,
                 ExposureGroups = eligibleGroups,
+                PassthroughFiles = [.. job.PassthroughFiles],
                 IsSelected = job.IsSelected
             });
         }
@@ -309,31 +333,6 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
         }
 
         return filtered;
-    }
-
-    private static void KillExistingPixInsightProcesses(IProgress<string>? logOutput)
-    {
-        try
-        {
-            var piProcesses = Process.GetProcessesByName("PixInsight");
-            if (piProcesses.Length > 0)
-            {
-                logOutput?.Report($"[PixInsight] Killing {piProcesses.Length} existing PixInsight process(es)...");
-                foreach (var p in piProcesses)
-                {
-                    try { p.Kill(true); p.WaitForExit(5000); } catch { }
-                    p.Dispose();
-                }
-                Thread.Sleep(3000); // Give OS time to fully release resources
-                logOutput?.Report("[PixInsight] Existing processes terminated.");
-            }
-            else
-            {
-                // PI may have just exited via --force-exit; wait for OS cleanup
-                Thread.Sleep(3000);
-            }
-        }
-        catch { /* best effort */ }
     }
 
     private static string[][] BuildArgsVariants(string scriptPath)
@@ -401,12 +400,13 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
         {
             var variant = argsVariants[attempt];
             output.Clear();
-            var sawEmptyScriptError = false;
-            var sawInvalidInstanceIndex = false;
+            var sawEmptyScriptError = 0;
+            var sawInvalidInstanceIndex = 0;
+            var outputLock = new object();
             var attemptStartUtc = DateTime.UtcNow;
-            var maxAttemptDuration = TimeSpan.FromMinutes(20);
 
             logOutput?.Report($"[PixInsight attempt {attempt + 1}/{argsVariants.Length}] args=[{string.Join(", ", variant)}]");
+            logOutput?.Report("[PixInsight] No fixed processing timeout; the attempt continues while PixInsight is running. Use Abort to cancel.");
             _logger.LogInformation("Starting PixInsight: {Exe} args={@Args}", pixInsightExe, variant);
 
             var startInfo = new ProcessStartInfo
@@ -429,12 +429,14 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
             try
             {
                 var baselinePids = GetPixInsightPids();
+                var attemptPids = new HashSet<int>();
                 logOutput?.Report($"[PixInsight] Baseline PixInsight PIDs: {string.Join(',', baselinePids)}");
                 using var process = new Process { StartInfo = startInfo };
 
                 process.Start();
                 try
                 {
+                    attemptPids.Add(process.Id);
                     logOutput?.Report($"[PixInsight] Launched launcher PID={process.Id}");
                 }
                 catch { }
@@ -456,13 +458,14 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                             var line = await process.StandardOutput.ReadLineAsync(cancellationToken);
                             if (line != null)
                             {
-                                output.AppendLine(line);
+                                lock (outputLock)
+                                    output.AppendLine(line);
                                 logOutput?.Report(line);
                                 _logger.LogInformation("[PI stdout] {Line}", line);
                                 if (line.Contains("empty script", StringComparison.OrdinalIgnoreCase))
-                                    sawEmptyScriptError = true;
+                                    Volatile.Write(ref sawEmptyScriptError, 1);
                                 if (line.Contains("invalid application instance index", StringComparison.OrdinalIgnoreCase))
-                                    sawInvalidInstanceIndex = true;
+                                    Volatile.Write(ref sawInvalidInstanceIndex, 1);
                             }
                         }
                     }
@@ -487,13 +490,14 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                                 }
                                 else
                                 {
-                                    output.AppendLine("[ERROR] " + line);
+                                    lock (outputLock)
+                                        output.AppendLine("[ERROR] " + line);
                                     logOutput?.Report("[ERROR] " + line);
                                     _logger.LogError("[PI stderr] {Line}", line);
                                     if (line.Contains("empty script", StringComparison.OrdinalIgnoreCase))
-                                        sawEmptyScriptError = true;
+                                        Volatile.Write(ref sawEmptyScriptError, 1);
                                     if (line.Contains("invalid application instance index", StringComparison.OrdinalIgnoreCase))
-                                        sawInvalidInstanceIndex = true;
+                                        Volatile.Write(ref sawInvalidInstanceIndex, 1);
                                 }
                             }
                         }
@@ -506,16 +510,40 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
 
                 try
                 {
-                    var sentinelSeen = false;
                     var sawDetachedPixInsight = false;
                     var loggedDetached = false;
+                    var terminateLauncher = false;
+                    var sentinelSeen = false;
+                    string? lastProgressStage = null;
                     while (true)
                     {
+                        TrackNewPixInsightPids(baselinePids, attemptPids);
+
                         if (File.Exists(sentinelPath))
                         {
                             sentinelSeen = true;
                             break;
                         }
+
+                        var progressPath = sentinelPath + ".progress";
+                        if (File.Exists(progressPath))
+                        {
+                            try
+                            {
+                                var progressStage = (await File.ReadAllTextAsync(progressPath, cancellationToken)).Trim();
+                                if (!string.IsNullOrWhiteSpace(progressStage) &&
+                                    !string.Equals(progressStage, lastProgressStage, StringComparison.Ordinal))
+                                {
+                                    lastProgressStage = progressStage;
+                                    logOutput?.Report($"[PixInsight progress] {progressStage}");
+                                }
+                            }
+                            catch (IOException)
+                            {
+                                // The script may be replacing the tiny progress file.
+                            }
+                        }
+
                         var piRunning = HasDetachedPixInsightProcess(baselinePids);
                         if (piRunning)
                         {
@@ -538,37 +566,34 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                             }
                         }
 
-                        if (sawEmptyScriptError)
+                        if (Volatile.Read(ref sawEmptyScriptError) != 0)
                         {
                             logOutput?.Report("[PixInsight] Detected 'Empty script' output. Terminating process.");
-                            KillExistingPixInsightProcesses(logOutput);
+                            terminateLauncher = true;
                             break;
                         }
 
-                        if (sawInvalidInstanceIndex)
+                        if (Volatile.Read(ref sawInvalidInstanceIndex) != 0)
                         {
                             logOutput?.Report("[PixInsight] Detected 'Invalid application instance index'. Terminating process and retrying with fresh instance arguments.");
-                            KillExistingPixInsightProcesses(logOutput);
-                            break;
-                        }
-
-                        if (DateTime.UtcNow - attemptStartUtc > maxAttemptDuration)
-                        {
-                            logOutput?.Report("[PixInsight] Attempt timed out waiting for sentinel. Terminating process.");
-                            KillExistingPixInsightProcesses(logOutput);
+                            terminateLauncher = true;
                             break;
                         }
 
                         await Task.Delay(500, cancellationToken);
                     }
 
-                    if (sentinelSeen)
+                    // The script has finished once the sentinel exists. Stop every
+                    // PixInsight PID first observed after this attempt began, never a
+                    // pre-existing GUI instance. This also handles PixInsight detaching
+                    // from the launcher process.
+                    if (terminateLauncher || sentinelSeen)
                     {
-                        // Scripts can complete in detached PI instances; always clean up after success.
-                        KillExistingPixInsightProcesses(null);
+                        TerminatePixInsightProcesses(attemptPids, logOutput);
+                        if (!process.HasExited)
+                            await process.WaitForExitAsync(CancellationToken.None);
                     }
-
-                    if (!process.HasExited)
+                    else if (!process.HasExited)
                         await process.WaitForExitAsync(cancellationToken);
 
                     await Task.WhenAll(outputTask, errorTask);
@@ -576,15 +601,13 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                 catch (OperationCanceledException)
                 {
                     _logger.LogInformation("PixInsight execution cancelled - terminating process");
-                    logOutput?.Report("[ABORT] Terminating PixInsight process...");
+                    logOutput?.Report("[ABORT] Terminating PixInsight processes started by this attempt...");
 
                     try
                     {
+                        TerminatePixInsightProcesses(attemptPids, logOutput);
                         if (!process.HasExited)
-                        {
-                            process.Kill(true);
-                            await process.WaitForExitAsync(cancellationToken);
-                        }
+                            await process.WaitForExitAsync(CancellationToken.None);
                     }
                     catch (Exception killEx)
                     {
@@ -617,14 +640,12 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                     // Launcher exit code is not reliable for detached script execution.
                     Success = sentinelSuccess,
                     ExitCode = exitCode,
-                    Output = output.ToString(),
+                    Output = GetOutputText(output, outputLock),
                     ErrorMessage = sentinelSuccess ? null : $"PixInsight reported error: {trimmed}"
                 };
             }
 
             logOutput?.Report("[PixInsight] No sentinel file found, trying next argument variant...");
-            // Kill PI before retrying with a different variant to avoid "Invalid application instance index"
-            KillExistingPixInsightProcesses(logOutput);
         }
 
         return new ProcessingResult
@@ -632,9 +653,15 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
             Success = false,
             ExitCode = exitCode,
             Output = output.ToString(),
-            ErrorMessage = "PixInsight did not produce a sentinel file after all attempts. " +
-                   "Verify that PixInsight is installed and the executable path is correct."
+            ErrorMessage = "PixInsight exited without producing a completion sentinel after all launch variants. " +
+                   "Review the PixInsight output above for the script error."
         };
+    }
+
+    private static string GetOutputText(StringBuilder output, object outputLock)
+    {
+        lock (outputLock)
+            return output.ToString();
     }
 
     private static HashSet<int> GetPixInsightPids()
@@ -687,6 +714,58 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
         }
 
         return false;
+    }
+
+    private static void TrackNewPixInsightPids(HashSet<int> baselinePids, HashSet<int> attemptPids)
+    {
+        try
+        {
+            foreach (var process in Process.GetProcessesByName("PixInsight"))
+            {
+                try
+                {
+                    if (!baselinePids.Contains(process.Id))
+                        attemptPids.Add(process.Id);
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+        }
+        catch
+        {
+            // Best effort tracking; the launcher PID is always captured directly.
+        }
+    }
+
+    private static void TerminatePixInsightProcesses(HashSet<int> attemptPids, IProgress<string>? logOutput)
+    {
+        foreach (var pid in attemptPids.ToList())
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                if (process.HasExited)
+                    continue;
+
+                logOutput?.Report($"[PixInsight] Terminating attempt PID={pid}");
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(10_000);
+            }
+            catch (ArgumentException)
+            {
+                // The process already exited.
+            }
+            catch (InvalidOperationException)
+            {
+                // The process already exited.
+            }
+            catch (Exception ex)
+            {
+                logOutput?.Report($"[PixInsight] Could not terminate PID={pid}: {ex.Message}");
+            }
+        }
     }
 
     private static bool IsHarmlessStderrNoise(string line)

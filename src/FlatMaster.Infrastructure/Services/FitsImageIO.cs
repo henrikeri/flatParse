@@ -100,18 +100,36 @@ public sealed partial class FitsImageIO(ILogger logger)
         double bzero = double.Parse(headers.GetValueOrDefault("BZERO", "0"), CultureInfo.InvariantCulture);
         double bscale = double.Parse(headers.GetValueOrDefault("BSCALE", "1"), CultureInfo.InvariantCulture);
 
-        if (width == 0 || height == 0)
-            throw new InvalidDataException($"Invalid FITS dimensions {width}x{height} in {path}");
+        if (width <= 0 || height <= 0 || channels <= 0)
+            throw new InvalidDataException($"Invalid FITS dimensions {width}x{height}x{channels} in {path}");
 
         // ── Align to 2880 boundary ── (we already consumed full blocks)
-        int bytesPerPixel = Math.Abs(bitpix) / 8;
-        long pixelCount = (long)width * height * channels;
-        long dataBytes = pixelCount * bytesPerPixel;
+        int bytesPerPixel = bitpix switch
+        {
+            8 => 1,
+            16 => 2,
+            32 or -32 => 4,
+            -64 => 8,
+            _ => throw new NotSupportedException($"BITPIX {bitpix} not supported")
+        };
+        long pixelCount;
+        long dataBytes;
+        try
+        {
+            pixelCount = checked((long)width * height * channels);
+            dataBytes = checked(pixelCount * bytesPerPixel);
+        }
+        catch (OverflowException ex)
+        {
+            throw new InvalidDataException($"FITS dimensions overflow in {path}: {width}x{height}x{channels}", ex);
+        }
+        if (pixelCount > Array.MaxLength || dataBytes > Array.MaxLength)
+            throw new InvalidDataException($"FITS image is too large to load in memory: {width}x{height}x{channels} in {path}");
 
         var rawBuf = new byte[dataBytes];
         int dataRead = await ReadExactAsync(fs, rawBuf, ct);
         if (dataRead < dataBytes)
-            _logger.LogWarning("FITS pixel data truncated: expected {Expected}, got {Got}", dataBytes, dataRead);
+            throw new InvalidDataException($"Truncated FITS pixel data in {path}: expected {dataBytes} bytes, got {dataRead}.");
 
         // ── Decode pixels to double [0,1] ──
         var pixels = new double[pixelCount];
@@ -141,6 +159,8 @@ public sealed partial class FitsImageIO(ILogger logger)
             throw new InvalidDataException($"Not a valid XISF file: {path}");
 
         uint headerLen = BinaryPrimitives.ReadUInt32LittleEndian(sig.AsSpan(8));
+        if (headerLen > Array.MaxLength)
+            throw new InvalidDataException($"XISF header is too large to load in memory: {headerLen} bytes in {path}");
         var headerBuf = new byte[headerLen];
         await ReadExactAsync(fs, headerBuf, ct);
         var xml = Encoding.UTF8.GetString(headerBuf);
@@ -178,6 +198,8 @@ public sealed partial class FitsImageIO(ILogger logger)
         int channels = geometryParts.Length >= 3
             ? int.Parse(geometryParts[2], CultureInfo.InvariantCulture)
             : 1;
+        if (width <= 0 || height <= 0 || channels <= 0)
+            throw new InvalidDataException($"Invalid XISF geometry '{geometry}' in {path}");
 
         var (attachOffset, attachLen) = ParseXisfAttachmentLocation(location, path);
 
@@ -194,13 +216,24 @@ public sealed partial class FitsImageIO(ILogger logger)
         // Seek to attachment — XISF attachment offset is absolute from file start
         fs.Seek(attachOffset, SeekOrigin.Begin);
 
-        long pixelCount = (long)width * height * channels;
+        long pixelCount;
+        long expectedPixelBytes;
+        try
+        {
+            pixelCount = checked((long)width * height * channels);
+            expectedPixelBytes = checked(pixelCount * bytesPerSample);
+        }
+        catch (OverflowException ex)
+        {
+            throw new InvalidDataException($"XISF geometry overflow in {path}: {geometry}", ex);
+        }
+        if (pixelCount > Array.MaxLength || expectedPixelBytes > Array.MaxLength || attachLen > Array.MaxLength)
+            throw new InvalidDataException($"XISF image is too large to load in memory: {width}x{height}x{channels} in {path}");
         var attachmentBytes = new byte[attachLen];
         var attachmentRead = await ReadExactAsync(fs, attachmentBytes, ct);
         if (attachmentRead < attachLen)
             throw new InvalidDataException($"Truncated XISF attachment in {path}: expected {attachLen} bytes, got {attachmentRead}.");
 
-        var expectedPixelBytes = checked(pixelCount * bytesPerSample);
         var rawBuf = DecodeXisfAttachment(attachmentBytes, compression, expectedPixelBytes, path);
         if (rawBuf.LongLength != expectedPixelBytes)
             throw new InvalidDataException(

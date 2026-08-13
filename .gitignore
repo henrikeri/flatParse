@@ -130,6 +130,10 @@ flat_parse4_0.py
 .tmp_scripts/
 /tools/
 
+# Python helper caches
+__pycache__/
+*.py[cod]
+
 # Local generated diagnostics in source/workspace
 **/dark_matching_candidates.log
 

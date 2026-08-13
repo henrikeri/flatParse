@@ -44,6 +44,20 @@ function parentDir(p){ if (!p) return ""; var i = Math.max(p.lastIndexOf("/"), p
 function ensureDir(p){ if (p && !File.directoryExists(p)) File.createDirectory(p, true); }
 function kexp(x){ return (Math.round(x*1000)/1000).toString(); }
 function baseName(p){ return p.replace(/^.*[\\\/]/,''); }
+function tempOutputPath(finalPath, outputExt){ return finalPath + ".flatmaster_tmp." + outputExt; }
+function publishOutput(tempPath, finalPath){
+  if (!File.exists(tempPath)) throw new Error("Temporary output was not created: " + tempPath);
+  var backupPath = finalPath + ".flatmaster_backup";
+  try { if (File.exists(backupPath)) File.remove(backupPath); } catch(_){ }
+  if (File.exists(finalPath)) File.move(finalPath, backupPath);
+  try {
+    File.move(tempPath, finalPath);
+    try { if (File.exists(backupPath)) File.remove(backupPath); } catch(_){ }
+  } catch(e) {
+    try { if (!File.exists(finalPath) && File.exists(backupPath)) File.move(backupPath, finalPath); } catch(_){ }
+    throw e;
+  }
+}
 function guessDateFromPath(dir, files){
   var rx = /\b(20\d{2}-\d{2}-\d{2})\b/;
   var m = dir.match(rx);
@@ -165,10 +179,12 @@ function run(){
       if (outExt !== "fits") outExt = "xisf";
       var masterName = "MasterDark_" + exposureLabel(exp) + "_" + tempLabel(temp) + "." + outExt;
       var masterOut = joinPath(outBase, masterName);
-      if (File.exists(masterOut)) { log("SKIP (master already exists): " + masterOut); continue; }
+      var masterTemp = tempOutputPath(masterOut, outExt);
+      try { if (File.exists(masterTemp)) File.remove(masterTemp); } catch(_){ }
       log("DARK integrate: " + masterOut + " (" + files.length + " frames)");
       pulse("DARK_BEFORE_INTEGRATE");
-      integrateToMaster(files, masterOut, true, CFG.xisfHintsMaster||"", CFG.rejection || {lowSigma:5.0, highSigma:5.0}, outExt);
+      integrateToMaster(files, masterTemp, true, CFG.xisfHintsMaster||"", CFG.rejection || {lowSigma:5.0, highSigma:5.0}, outExt);
+      publishOutput(masterTemp, masterOut);
       pulse("DARK_AFTER_INTEGRATE");
       log("Saved: " + masterOut);
     }

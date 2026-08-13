@@ -43,26 +43,55 @@ public sealed class DarkMatchingService(ILogger<DarkMatchingService> logger) : I
         {
             var overrideDark = darks.FirstOrDefault(d =>
                 string.Equals(Path.GetFullPath(d.FilePath), Path.GetFullPath(criteria.ManualDarkPath), StringComparison.OrdinalIgnoreCase));
-            if (overrideDark != null)
+            if (overrideDark != null && IsGeometryAllowed(overrideDark, criteria))
             {
                 _logger.LogInformation("Manual dark override selected: {Path}", overrideDark.FilePath);
                 return BuildMatch(overrideDark, optimizeRequired: false, $"Override {ToMatchLabel(overrideDark.Type)}", criteria, options);
+            }
+            if (overrideDark != null)
+            {
+                _logger.LogWarning(
+                    "Manual dark override rejected due to geometry mismatch: flat={FlatWidth}x{FlatHeight}x{FlatChannels}, dark={DarkWidth}x{DarkHeight}x{DarkChannels}, path={Path}",
+                    criteria.Width, criteria.Height, criteria.Channels,
+                    overrideDark.Width, overrideDark.Height, overrideDark.Channels,
+                    overrideDark.FilePath);
             }
         }
 
         var darkCalibrationCandidates = darks
             .Where(d => IsDarkCalibrationType(d.Type))
+            .Where(d => IsBinningAllowed(d, criteria, options))
+            .Where(d => IsGeometryAllowed(d, criteria))
             .ToList();
+
+        // A bias is the zero-second member of the dark-calibration family. Keep
+        // master bias ahead of a single raw bias, but let its exposure distance
+        // compete with the selected dark instead of considering it only after
+        // every possible dark has failed.
+        var biasCandidates = darks
+            .Where(d => d.Type is ImageType.MasterBias or ImageType.Bias)
+            .Where(d => IsBinningAllowed(d, criteria, options))
+            .Where(d => IsGeometryAllowed(d, criteria))
+            .ToList();
+        var preferredBias = SelectPreferredBias(biasCandidates, criteria, options);
 
         var strictCandidates = darkCalibrationCandidates
             .Where(d => IsTemperatureAllowed(d, criteria, options.PreferClosestTemp, options.MaxTempDeltaC))
             .ToList();
         var strictMatch = TryFindDarkMatchByPriority(exposure, criteria, options, strictCandidates, tempContextSuffix: null);
         if (strictMatch != null)
-            return strictMatch;
+        {
+            var biasReason = GetBiasPreferenceReason(
+                strictMatch, preferredBias, darkCalibrationCandidates, exposure, criteria, options);
+            if (biasReason == null)
+                return strictMatch;
 
-        // Before falling back to bias, allow darks to beat bias when delta thresholds are within limits.
-        var hasBiasCandidates = darks.Any(d => d.Type is ImageType.MasterBias or ImageType.Bias);
+            return BuildBiasMatch(preferredBias!, biasReason, criteria, options);
+        }
+
+        // If the strict temperature pass found nothing, allow an otherwise
+        // suitable dark to compete with the zero-second bias using the explicit
+        // dark-over-bias limits.
         if (options.DarkOverBiasTempDeltaC > 0 || options.DarkOverBiasExposureDeltaSeconds > 0)
         {
             var anyTempMatch = TryFindDarkMatchByPriority(
@@ -74,55 +103,116 @@ public sealed class DarkMatchingService(ILogger<DarkMatchingService> logger) : I
 
             if (anyTempMatch != null)
             {
-                var matchedDark = darks.FirstOrDefault(d =>
-                    string.Equals(d.FilePath, anyTempMatch.FilePath, StringComparison.OrdinalIgnoreCase));
-                var tempDelta = matchedDark?.Temperature.HasValue == true && criteria.Temperature.HasValue
-                    ? Math.Abs(matchedDark.Temperature!.Value - criteria.Temperature.Value)
-                    : (double?)null;
-                var exposureDelta = matchedDark is not null
-                    ? Math.Abs(matchedDark.ExposureTime - exposure)
-                    : (double?)null;
+                var biasReason = GetBiasPreferenceReason(
+                    anyTempMatch, preferredBias, darkCalibrationCandidates, exposure, criteria, options);
+                if (biasReason != null)
+                    return BuildBiasMatch(preferredBias!, biasReason, criteria, options);
 
-                var tempWithinThreshold = options.DarkOverBiasTempDeltaC <= 0
-                    || !tempDelta.HasValue
-                    || tempDelta.Value <= options.DarkOverBiasTempDeltaC;
-                var exposureWithinThreshold = options.DarkOverBiasExposureDeltaSeconds <= 0
-                    || !exposureDelta.HasValue
-                    || exposureDelta.Value <= options.DarkOverBiasExposureDeltaSeconds;
-
-                if (!hasBiasCandidates || (tempWithinThreshold && exposureWithinThreshold))
+                return anyTempMatch with
                 {
-                    return anyTempMatch with
-                    {
-                        MatchKind = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0},temp<={1:0.#}C,exp<={2:0.###}s",
-                            anyTempMatch.MatchKind,
-                            options.DarkOverBiasTempDeltaC,
-                            options.DarkOverBiasExposureDeltaSeconds)
-                    };
-                }
+                    MatchKind = string.Format(
+                        CultureInfo.InvariantCulture,
+                        "{0},temp<={1:0.#}C,exp<={2:0.###}s",
+                        anyTempMatch.MatchKind,
+                        options.DarkOverBiasTempDeltaC,
+                        options.DarkOverBiasExposureDeltaSeconds)
+                };
             }
         }
 
-        // Priority 7: Bias fallback.
-        var masterBiasCandidates = darks.Where(d => d.Type is ImageType.MasterBias).ToList();
-        if (masterBiasCandidates.Count > 0)
-        {
-            var best = SelectBestByScore(masterBiasCandidates, criteria, options);
-            return BuildMatch(best, optimizeRequired: false, "P7 MasterBias", criteria, options);
-        }
-
-        var biasCandidates = darks.Where(d => d.Type is ImageType.Bias).ToList();
-        if (biasCandidates.Count > 0)
-        {
-            var best = SelectBestByScore(biasCandidates, criteria, options);
-            return BuildMatch(best, optimizeRequired: false, "P7 Bias", criteria, options);
-        }
+        // No usable dark: use the compatible zero-second calibration candidate.
+        if (preferredBias != null)
+            return BuildBiasMatch(preferredBias, "no suitable dark", criteria, options);
 
         // Priority 8: no match.
         _logger.LogWarning("P8: no suitable dark or bias found for exposure {Exposure}s", exposure);
         return null;
+    }
+
+    private static DarkFrame? SelectPreferredBias(
+        List<DarkFrame> candidates,
+        MatchingCriteria criteria,
+        DarkMatchingOptions options)
+    {
+        var masters = candidates.Where(d => d.Type is ImageType.MasterBias).ToList();
+        if (masters.Count > 0)
+            return SelectBestByScore(masters, criteria, options);
+
+        return candidates.Count > 0
+            ? SelectBestByScore(candidates, criteria, options)
+            : null;
+    }
+
+    private static string? GetBiasPreferenceReason(
+        DarkMatchResult darkMatch,
+        DarkFrame? bias,
+        List<DarkFrame> darkCandidates,
+        double targetExposure,
+        MatchingCriteria criteria,
+        DarkMatchingOptions options)
+    {
+        if (bias == null)
+            return null;
+
+        var matchedDark = darkCandidates.FirstOrDefault(d =>
+            string.Equals(d.FilePath, darkMatch.FilePath, StringComparison.OrdinalIgnoreCase));
+        if (matchedDark == null)
+            return "dark candidate unavailable";
+
+        var darkExposureDelta = Math.Abs(matchedDark.ExposureTime - targetExposure);
+        var biasExposureDelta = Math.Abs(bias.ExposureTime - targetExposure);
+
+        // This is the key low-exposure rule: the bias is a zero-second dark and
+        // wins when zero seconds is a closer exposure match than the chosen dark.
+        if (biasExposureDelta + ExactExposureTolerance < darkExposureDelta)
+        {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "closer exposure: bias delta {0:0.###}s < dark delta {1:0.###}s",
+                biasExposureDelta,
+                darkExposureDelta);
+        }
+
+        if (options.DarkOverBiasExposureDeltaSeconds > 0 &&
+            darkExposureDelta > options.DarkOverBiasExposureDeltaSeconds)
+        {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "dark exposure delta {0:0.###}s exceeds {1:0.###}s",
+                darkExposureDelta,
+                options.DarkOverBiasExposureDeltaSeconds);
+        }
+
+        if (options.DarkOverBiasTempDeltaC > 0 &&
+            matchedDark.Temperature.HasValue &&
+            criteria.Temperature.HasValue)
+        {
+            var tempDelta = Math.Abs(matchedDark.Temperature.Value - criteria.Temperature.Value);
+            if (tempDelta > options.DarkOverBiasTempDeltaC)
+            {
+                return string.Format(
+                    CultureInfo.InvariantCulture,
+                    "dark temperature delta {0:0.#}C exceeds {1:0.#}C",
+                    tempDelta,
+                    options.DarkOverBiasTempDeltaC);
+            }
+        }
+
+        return null;
+    }
+
+    private static DarkMatchResult BuildBiasMatch(
+        DarkFrame bias,
+        string reason,
+        MatchingCriteria criteria,
+        DarkMatchingOptions options)
+    {
+        return BuildMatch(
+            bias,
+            optimizeRequired: false,
+            $"P7 {ToMatchLabel(bias.Type)}({reason})",
+            criteria,
+            options);
     }
 
     private DarkMatchResult? TryFindDarkMatchByPriority(
@@ -184,34 +274,40 @@ public sealed class DarkMatchingService(ILogger<DarkMatchingService> logger) : I
                 options);
         }
 
-        // Priority 5: Master dark within +/-10s (outside +/-2s).
-        var p5 = darkCandidates
-            .Where(d => IsMasterDarkType(d.Type) && IsWithinDelta(d.ExposureTime, exposure, NearTwoSeconds, NearTenSeconds))
-            .ToList();
-        if (p5.Count > 0)
+        // Priority 5: Master dark within +/-10s (outside +/-2s), with optimization.
+        if (options.AllowNearestExposureWithOptimize)
         {
-            var best = SelectNearest(p5, exposure, criteria, options);
-            return BuildMatch(
-                best,
-                optimizeRequired: false,
-                string.Format(CultureInfo.InvariantCulture, "P5 {0}(nearest<=10s,{1:F3}s{2})", ToMatchLabel(best.Type), best.ExposureTime, tempContextSuffix),
-                criteria,
-                options);
+            var p5 = darkCandidates
+                .Where(d => IsMasterDarkType(d.Type) && IsWithinDelta(d.ExposureTime, exposure, NearTwoSeconds, NearTenSeconds))
+                .ToList();
+            if (p5.Count > 0)
+            {
+                var best = SelectNearest(p5, exposure, criteria, options);
+                return BuildMatch(
+                    best,
+                    optimizeRequired: true,
+                    string.Format(CultureInfo.InvariantCulture, "P5 {0}(nearest<=10s,optimize,{1:F3}s{2})", ToMatchLabel(best.Type), best.ExposureTime, tempContextSuffix),
+                    criteria,
+                    options);
+            }
         }
 
-        // Priority 6: Loose/raw dark within +/-10s (outside +/-2s).
-        var p6 = darkCandidates
-            .Where(d => IsRawDarkType(d.Type) && IsWithinDelta(d.ExposureTime, exposure, NearTwoSeconds, NearTenSeconds))
-            .ToList();
-        if (p6.Count > 0)
+        // Priority 6: Loose/raw dark within +/-10s (outside +/-2s), with optimization.
+        if (options.AllowNearestExposureWithOptimize)
         {
-            var best = SelectNearest(p6, exposure, criteria, options);
-            return BuildMatch(
-                best,
-                optimizeRequired: false,
-                string.Format(CultureInfo.InvariantCulture, "P6 {0}(nearest<=10s,{1:F3}s{2})", ToMatchLabel(best.Type), best.ExposureTime, tempContextSuffix),
-                criteria,
-                options);
+            var p6 = darkCandidates
+                .Where(d => IsRawDarkType(d.Type) && IsWithinDelta(d.ExposureTime, exposure, NearTwoSeconds, NearTenSeconds))
+                .ToList();
+            if (p6.Count > 0)
+            {
+                var best = SelectNearest(p6, exposure, criteria, options);
+                return BuildMatch(
+                    best,
+                    optimizeRequired: true,
+                    string.Format(CultureInfo.InvariantCulture, "P6 {0}(nearest<=10s,optimize,{1:F3}s{2})", ToMatchLabel(best.Type), best.ExposureTime, tempContextSuffix),
+                    criteria,
+                    options);
+            }
         }
 
         return null;
@@ -353,6 +449,26 @@ public sealed class DarkMatchingService(ILogger<DarkMatchingService> logger) : I
             return true;
 
         return Math.Abs(frame.Temperature.Value - criteria.Temperature.Value) <= maxTempDeltaC;
+    }
+
+    private static bool IsBinningAllowed(DarkFrame frame, MatchingCriteria criteria, DarkMatchingOptions options)
+    {
+        if (!options.EnforceBinning || string.IsNullOrWhiteSpace(criteria.Binning) || string.IsNullOrWhiteSpace(frame.Binning))
+            return true;
+
+        return string.Equals(frame.Binning.Trim(), criteria.Binning.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGeometryAllowed(DarkFrame frame, MatchingCriteria criteria)
+    {
+        if (criteria.Width <= 0 || criteria.Height <= 0)
+            return true;
+        if (frame.Width <= 0 || frame.Height <= 0)
+            return false;
+
+        return frame.Width == criteria.Width &&
+               frame.Height == criteria.Height &&
+               frame.Channels == criteria.Channels;
     }
 
     public MatchingDiagnostic? FindBestDarkWithDiagnostics(

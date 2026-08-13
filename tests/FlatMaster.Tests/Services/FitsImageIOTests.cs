@@ -108,6 +108,36 @@ public class FitsImageIOTests
         }
     }
 
+    [Fact]
+    public async Task ReadFitsAsync_TruncatedPixelPayload_ThrowsInvalidDataException()
+    {
+        var tempPath = Path.Combine(Path.GetTempPath(), $"flatmaster_{Guid.NewGuid():N}_truncated.fits");
+        try
+        {
+            var image = new FitsImageIO.ImageData
+            {
+                Width = 2,
+                Height = 2,
+                Channels = 1,
+                Pixels = [0.1, 0.2, 0.3, 0.4]
+            };
+            await FitsImageIO.WriteFitsAsync(tempPath, image);
+
+            using (var fs = new FileStream(tempPath, FileMode.Open, FileAccess.Write, FileShare.None))
+                fs.SetLength(2880 + 8);
+
+            var io = new FitsImageIO(NullLogger.Instance);
+            var read = async () => await io.ReadAsync(tempPath);
+
+            await read.Should().ThrowAsync<InvalidDataException>();
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
+    }
+
     private static string ReadXisfHeaderXml(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);

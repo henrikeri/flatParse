@@ -47,6 +47,9 @@ public sealed record MatchingCriteria
     public double? Gain { get; init; }
     public double? Offset { get; init; }
     public double? Temperature { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int Channels { get; init; } = 1;
     public string? ManualDarkPath { get; init; }
 }
 

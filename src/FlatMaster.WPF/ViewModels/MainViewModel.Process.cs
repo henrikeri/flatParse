@@ -21,6 +21,7 @@ using System.Text;
 using CommunityToolkit.Mvvm.Input;
 using FlatMaster.Core.Interfaces;
 using FlatMaster.Core.Models;
+using FlatMaster.Infrastructure.Services;
 using Microsoft.Extensions.Logging;
 using WpfMessageBox = System.Windows.MessageBox;
 using WpfMessageBoxButton = System.Windows.MessageBoxButton;
@@ -47,13 +48,6 @@ public partial class MainViewModel
     [RelayCommand]
     private async Task ProcessSelectedAsync()
     {
-        if (!UseNativeProcessing && !File.Exists(PixInsightPath))
-        {
-            WpfMessageBox.Show("Please specify a valid PixInsight executable.", "Invalid Path",
-                WpfMessageBoxButton.OK, WpfMessageBoxImage.Warning);
-            return;
-        }
-
         SyncGroupOverrideSelectionsFromUi();
         var selectedDirectories = FlatDirectories
             .Where(vm => vm.IsSelected)
@@ -70,8 +64,19 @@ public partial class MainViewModel
             return;
         }
 
+        var hasIntegrationGroups = selectedJobsRaw.Any(job => job.ExposureGroups.Any(group => group.IsValid));
+        if (!UseNativeProcessing &&
+            (DarksOnlyProcessMode || hasIntegrationGroups) &&
+            !File.Exists(PixInsightPath))
+        {
+            WpfMessageBox.Show("Please specify a valid PixInsight executable.", "Invalid Path",
+                WpfMessageBoxButton.OK, WpfMessageBoxImage.Warning);
+            return;
+        }
+
         var selectedDarks = GetSelectedDarks();
-        if (selectedDarks.Count == 0 && (DarksOnlyProcessMode || RequireDarks))
+        if (selectedDarks.Count == 0 &&
+            (DarksOnlyProcessMode || (RequireDarks && hasIntegrationGroups)))
         {
             var message = DarksOnlyProcessMode
                 ? "No dark frames are selected. Select dark frames from Scan & Match before starting darks-only processing."
@@ -81,7 +86,7 @@ public partial class MainViewModel
             return;
         }
 
-        if (!DarksOnlyProcessMode && selectedDarks.Count == 0)
+        if (!DarksOnlyProcessMode && hasIntegrationGroups && selectedDarks.Count == 0)
             Log("No darks selected; groups without a match will be integrated without dark subtraction.");
 
         _cancellationTokenSource?.Cancel();
@@ -125,6 +130,14 @@ public partial class MainViewModel
                 return;
             }
 
+            var preserved = await PassthroughFileReplicator.CopyAsync(
+                plan.SelectedJobs,
+                logProgress,
+                cancellationToken);
+            if (preserved.Count > 0)
+                Log($"[Preserve] Replicated {preserved.Count} selected underfilled-group file(s) unchanged.");
+
+            ValidateDarkCompatibilityBeforeProcessing(plan);
             await MaterializeRequiredMastersAsync(plan, effectiveOutputRoot, cancellationToken, logProgress);
 
             ProcessingResult result;
@@ -141,9 +154,9 @@ public partial class MainViewModel
 
             Log("\nGenerating matching diagnostics...");
             var diagnostics = await _darkMatcher.GenerateMatchingDiagnosticsAsync(
-                selectedJobs, selectedDarks, config.DarkMatching);
+                plan.Jobs, plan.DarkCatalog, config.DarkMatching);
             MatchingDiagnostics = new ObservableCollection<MatchingDiagnostic>(diagnostics);
-            await BuildMatchingGroupsAsync(selectedJobs, selectedDarks, diagnostics, cancellationToken);
+            await BuildMatchingGroupsAsync(plan.Jobs, plan.DarkCatalog, diagnostics, cancellationToken);
             Log($"Generated {diagnostics.Count} matching diagnostics");
 
             var outputConfig = new OutputPathConfiguration
@@ -160,9 +173,10 @@ public partial class MainViewModel
                 var report = _reportService.GenerateReport(
                     reportStartUtc,
                     diagnostics,
-                    selectedDarks,
+                    plan.DarkCatalog,
                     config,
-                    outputConfig);
+                    outputConfig,
+                    result);
                 return _reportService.FormatReportAsText(report);
             }, cancellationToken);
 
@@ -219,16 +233,87 @@ public partial class MainViewModel
         }
     }
 
+    private void ValidateDarkCompatibilityBeforeProcessing(ProcessingPlan plan)
+    {
+        var unmatched = new List<(DirectoryJob Job, ExposureGroup Group)>();
+        foreach (var job in plan.SelectedJobs)
+        {
+            foreach (var group in job.ExposureGroups.Where(group => group.IsValid))
+            {
+                var match = _darkMatcher.FindBestDark(
+                    group,
+                    plan.SelectedDarks,
+                    plan.Configuration.DarkMatching);
+                if (match == null)
+                    unmatched.Add((job, group));
+            }
+        }
+
+        if (unmatched.Count == 0)
+            return;
+
+        var unmatchedFiles = unmatched.Sum(item => item.Group.FilePaths.Count);
+        var preview = string.Join(
+            Environment.NewLine,
+            unmatched.Take(12).Select(item =>
+            {
+                var criteria = item.Group.MatchingCriteria;
+                var geometry = criteria is { Width: > 0, Height: > 0 }
+                    ? $"{criteria.Width}x{criteria.Height}x{Math.Max(1, criteria.Channels)}"
+                    : "unknown geometry";
+                return $"  {item.Job.DirectoryPath} [{item.Group.ExposureTime:0.###}s, {geometry}, {item.Group.FilePaths.Count} flats]";
+            }));
+
+        var message =
+            $"Preflight found {unmatched.Count} flat group(s) ({unmatchedFiles} files) without a compatible dark/bias. " +
+            "Exposure, binning, gain/offset, temperature, and image geometry are checked before PixInsight starts." +
+            Environment.NewLine + preview;
+
+        if (plan.Configuration.RequireDarks)
+        {
+            throw new InvalidOperationException(
+                message + Environment.NewLine +
+                "Processing was stopped before the long-running integration stage. Add matching darks, exclude these groups, " +
+                "or disable 'Require darks' to integrate them without dark subtraction.");
+        }
+
+        Log("WARNING: " + message);
+        Log("These groups will be integrated without dark subtraction because 'Require darks' is disabled.");
+    }
+
     private ProcessingConfiguration BuildProcessingConfiguration()
     {
+        var maxParallelism = int.TryParse(
+            _configuration["AppSettings:MaxThreads"],
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out var configuredMaxThreads)
+            ? Math.Max(1, configuredMaxThreads)
+            : Math.Max(1, Environment.ProcessorCount);
+
         return new ProcessingConfiguration
         {
             PixInsightExecutable = PixInsightPath,
+            MaxParallelism = maxParallelism,
             OutputFileExtension = string.Equals(OutputFormat, "FITS", StringComparison.OrdinalIgnoreCase) ? "fits" : "xisf",
             DeleteCalibratedFlats = DeleteCalibrated,
             CacheDirName = _configuration["ProcessingDefaults:CacheDirName"] ?? "_DarkMasters",
             CalibratedSubdirBase = _configuration["ProcessingDefaults:CalibratedSubdirBase"] ?? "_CalibratedFlats",
             XisfHintsMaster = _configuration["ProcessingDefaults:XisfHintsMaster"] ?? "",
+            MinimumCalibratedFlatMedian = double.TryParse(
+                _configuration["ProcessingDefaults:MinimumCalibratedFlatMedian"],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var minimumFlatMedian)
+                ? Math.Max(0, minimumFlatMedian)
+                : 0.01,
+            FlatSignalSampleGrid = int.TryParse(
+                _configuration["ProcessingDefaults:FlatSignalSampleGrid"],
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var flatSignalSampleGrid)
+                ? Math.Clamp(flatSignalSampleGrid, 4, 64)
+                : 16,
             Rejection = new RejectionSettings
             {
                 LowSigma = double.Parse(_configuration["ProcessingDefaults:RejectionLowSigma"] ?? "5.0", CultureInfo.InvariantCulture),
@@ -295,6 +380,7 @@ public partial class MainViewModel
                     OutputRootPath = outputRoot,
                     RelativeDirectory = job.RelativeDirectory,
                     ExposureGroups = job.ExposureGroups,
+                    PassthroughFiles = [.. job.PassthroughFiles],
                     IsSelected = job.IsSelected
                 });
             }

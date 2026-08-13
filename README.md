@@ -12,6 +12,7 @@ A C# application for processing and integrating astronomical flat calibration fr
 ### Smart Discovery
 - Recursive directory scanning for flat and dark frames
 - Automatic exposure grouping (minimum 3 frames per group)
+- Lossless preservation of underfilled groups: one-file groups are copied by default; selected two-file groups are copied unchanged
 - FITS and XISF format support
 - Metadata extraction from headers and filenames
 
@@ -45,11 +46,14 @@ A C# application for processing and integrating astronomical flat calibration fr
 - Optional calibrated intermediate cleanup
 - Session logging to file
 
-## Requirements
+## Download and Requirements
 
-- **.NET 8.0 SDK** ([Download](https://dotnet.microsoft.com/download/dotnet/8.0))
+- **[FlatMaster v1.0.5](https://github.com/henrikeri/flatParse/releases/tag/v1.0.5)** — framework-dependent single-file Windows x64 executable
+- **.NET 8 Desktop Runtime** ([Download](https://dotnet.microsoft.com/download/dotnet/8.0))
 - **Windows 10/11** (WPF requirement)
 - **PixInsight 1.8.9+** ([Official Site](https://pixinsight.com)) — only needed when using the PI engine
+
+The .NET 8 SDK is required only when building FlatMaster from source.
 
 ## Quick Start
 

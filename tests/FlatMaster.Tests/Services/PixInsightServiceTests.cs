@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Threading.Tasks;
 using FlatMaster.Core.Models;
 using FlatMaster.Infrastructure.Services;
 using FluentAssertions;
@@ -21,6 +22,22 @@ public class PixInsightServiceTests
 
         script.Should().Contain("ImageCalibration");
         script.Should().Contain("calibrateFlats");
+        script.Should().Contain("requireDarks:true");
+        script.Should().Contain("if (CFG.requireDarks)");
+        script.Should().Contain("optimize: true");
+        script.Should().Contain("minimumCalibratedFlatMedian:0.01");
+        script.Should().Contain("flatSignalSampleGrid:16");
+        script.Should().Contain("rejectLowSignalCalibratedFlats");
+        script.Should().Contain("sampledImageMedian");
+        script.Should().Contain("publishOutput(masterTemp, masterOut)");
+        script.Should().Contain("var biasMasterCache = {};");
+        script.Should().Contain("P7 Bias(cached)");
+        script.Should().Contain("Cannot replace cached master bias");
+        script.Should().Contain("\"Master Bias\"");
+        script.Should().Contain("IC.masterBiasEnabled = true;");
+        script.Should().Contain("IC.masterBiasPath = calibrationPath;");
+        script.Should().Contain("calibration=\"+(sel.isBias ? \"bias\" : \"dark\")");
+        script.Should().NotContain("SKIP (master already exists)");
     }
 
     [Fact]
@@ -32,6 +49,8 @@ public class PixInsightServiceTests
 
         script.Should().NotContain("ImageCalibration");
         script.Should().Contain("DARK integrate:");
+        script.Should().Contain("publishOutput(masterTemp, masterOut)");
+        script.Should().NotContain("SKIP (master already exists)");
     }
 
     [Fact]
@@ -42,6 +61,42 @@ public class PixInsightServiceTests
         var script = _service.GeneratePJSRScript(plan);
 
         script.Should().Contain("outputExtension:\"fits\"");
+    }
+
+    [Fact]
+    public async Task ProcessJobsInBatchesAsync_PreservationOnlyPlan_DoesNotRequirePixInsight()
+    {
+        var plan = new ProcessingPlan
+        {
+            Jobs =
+            [
+                new DirectoryJob
+                {
+                    DirectoryPath = "D:/input",
+                    BaseRootPath = "D:/input",
+                    OutputRootPath = "D:/output",
+                    RelativeDirectory = "single",
+                    ExposureGroups = [],
+                    PassthroughFiles = ["D:/input/only_flat.fit"],
+                    IsSelected = true
+                }
+            ],
+            DarkCatalog = [],
+            Configuration = new ProcessingConfiguration
+            {
+                PixInsightExecutable = "Z:/missing/PixInsight.exe",
+                DarkMatching = new DarkMatchingOptions(),
+                Rejection = new RejectionSettings()
+            }
+        };
+
+        var result = await _service.ProcessJobsInBatchesAsync(
+            plan,
+            plan.Configuration.PixInsightExecutable,
+            batchSize: 25);
+
+        result.Success.Should().BeTrue();
+        result.Output.Should().Be("No jobs to process.");
     }
 
     private static ProcessingPlan BuildPlan(string relativeDirectory, double exposure, string outputFileExtension = "xisf")

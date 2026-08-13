@@ -34,16 +34,24 @@ public sealed class ProcessingReportService(ILogger<ProcessingReportService> log
         IEnumerable<MatchingDiagnostic> matchingDiagnostics,
         IEnumerable<DarkFrame> darkCatalog,
         ProcessingConfiguration config,
-        OutputPathConfiguration outputConfig)
+        OutputPathConfiguration outputConfig,
+        ProcessingResult? processingResult = null)
     {
         var diagnosticList = matchingDiagnostics.ToList();
         var (calibratedBytes, darkMasterBytes, masterCalibrationBytes) =
             ComputeGeneratedStorageBytes(outputConfig.OutputRootPath, config, startTime);
 
-        var succeeded = diagnosticList.Count(d =>
-            d.SelectedDark != null ||
-            (!config.RequireDarks && d.SelectionReason.Contains("No suitable dark", StringComparison.OrdinalIgnoreCase)));
-        var failed = diagnosticList.Count - succeeded;
+        var hasExecutionCounts = processingResult != null &&
+            processingResult.SucceededFiles + processingResult.FailedFiles > 0;
+        var succeeded = hasExecutionCounts
+            ? processingResult!.SucceededFiles
+            : diagnosticList.Count(d =>
+                d.SelectedDark != null ||
+                (!config.RequireDarks && d.SelectionReason.Contains("No suitable dark", StringComparison.OrdinalIgnoreCase)));
+        var failed = hasExecutionCounts
+            ? processingResult!.FailedFiles
+            : diagnosticList.Count - succeeded;
+        var total = hasExecutionCounts ? succeeded + failed : diagnosticList.Count;
 
         var tempDeltas = diagnosticList
             .Where(d => d.TemperatureDeltaC.HasValue)
@@ -71,7 +79,7 @@ public sealed class ProcessingReportService(ILogger<ProcessingReportService> log
         {
             StartTime = startTime,
             EndTime = DateTime.UtcNow,
-            TotalFlatsProcessed = diagnosticList.Count,
+            TotalFlatsProcessed = total,
             FlatsSucceeded = succeeded,
             FlatsFailed = failed,
             UniqueExposureGroups = exposureGroups,
@@ -87,7 +95,10 @@ public sealed class ProcessingReportService(ILogger<ProcessingReportService> log
             MaxSelectedDarkTemperatureC = selectedDarkTemps.Count > 0 ? selectedDarkTemps.Max() : null,
             OutputRootDirectory = outputConfig.OutputRootPath,
             ReplicatedOutputTree = outputConfig.Mode == OutputMode.ReplicatedSeparateTree,
-            MatchingDiagnostics = diagnosticList
+            MatchingDiagnostics = diagnosticList,
+            Errors = processingResult?.FailedDirectories
+                .Select(path => $"Processing failed: {path}")
+                .ToList() ?? []
         };
     }
 

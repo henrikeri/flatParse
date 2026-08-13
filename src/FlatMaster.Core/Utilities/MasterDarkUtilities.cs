@@ -27,12 +27,29 @@ public static partial class MasterDarkUtilities
         return null;
     }
 
-    public static string ComputeMasterKeyHash(double exposure, string binning, double? gain, int width, int height)
+    public static string ComputeMasterKeyHash(
+        double exposure,
+        string binning,
+        double? gain,
+        int width,
+        int height,
+        double? offset = null,
+        int channels = 1)
     {
         // Use full precision (round-trip) for exposure and gain to ensure deterministic uniqueness
         var exposureStr = exposure.ToString("R", CultureInfo.InvariantCulture);
         var gainStr = gain.HasValue ? gain.Value.ToString("R", CultureInfo.InvariantCulture) : "NA";
-        var keyString = string.Format(CultureInfo.InvariantCulture, "exp{0}_bin{1}_gain{2}_res{3}x{4}", exposureStr, binning, gainStr, width, height);
+        var offsetStr = offset.HasValue ? offset.Value.ToString("R", CultureInfo.InvariantCulture) : "NA";
+        var keyString = string.Format(
+            CultureInfo.InvariantCulture,
+            "exp{0}_bin{1}_gain{2}_offset{3}_res{4}x{5}x{6}",
+            exposureStr,
+            binning,
+            gainStr,
+            offsetStr,
+            width,
+            height,
+            channels);
         var b = System.Text.Encoding.UTF8.GetBytes(keyString);
         var h = System.Security.Cryptography.SHA1.HashData(b);
         return BitConverter.ToString(h).Replace("-", "").ToLowerInvariant();

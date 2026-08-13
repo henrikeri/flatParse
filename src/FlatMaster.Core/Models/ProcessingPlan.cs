@@ -41,6 +41,7 @@ public sealed class ProcessingPlan
 public sealed record ProcessingConfiguration
 {
     public required string PixInsightExecutable { get; init; }
+    public int MaxParallelism { get; init; } = Math.Max(1, Environment.ProcessorCount);
     public string OutputFileExtension { get; init; } = "xisf";
     public bool DeleteCalibratedFlats { get; init; } = true;
     public string CacheDirName { get; init; } = "_DarkMasters";
@@ -48,6 +49,17 @@ public sealed record ProcessingConfiguration
     public string MasterSubdirName { get; init; } = "Masters";
     public string XisfHintsCal { get; init; } = "";
     public string XisfHintsMaster { get; init; } = "compression-codec zlib+sh; compression-level 9; checksum sha1";
+    /// <summary>
+    /// Minimum dark-subtracted flat signal in normalized [0,1] units. Calibrated
+    /// frames below this level are rejected before multiplicative normalization.
+    /// </summary>
+    public double MinimumCalibratedFlatMedian { get; init; } = 0.01;
+
+    /// <summary>
+    /// Width and height of the deterministic image-wide sampling grid used by
+    /// the PixInsight calibrated-flat signal check.
+    /// </summary>
+    public int FlatSignalSampleGrid { get; init; } = 16;
     public RejectionSettings Rejection { get; init; } = new();
     public DarkMatchingOptions DarkMatching { get; init; } = new();
 

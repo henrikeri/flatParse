@@ -206,13 +206,15 @@ dotnet test FlatMaster.sln -c Debug</code></pre>
 
     <h2 id="release">7. Release and Publishing</h2>
     <div class="card">
-      <h3>Self-contained publish (example)</h3>
+      <h3>Framework-dependent single-file publish (release format)</h3>
       <pre><code>dotnet publish src/FlatMaster.WPF/FlatMaster.WPF.csproj \
   -c Release \
   -r win-x64 \
-  --self-contained true \
-  /p:PublishSingleFile=true</code></pre>
-      <p>License files are embedded resources and available at runtime even in self-contained deployments.</p>
+  --self-contained false \
+  /p:PublishSingleFile=true \
+  /p:DebugType=None \
+  /p:DebugSymbols=false</code></pre>
+      <p>The executable bundles FlatMaster and its managed dependencies, but relies on the installed .NET 8 Desktop Runtime. Default configuration and license files are embedded resources.</p>
 
       <h3>Release validation checklist</h3>
       <ol>

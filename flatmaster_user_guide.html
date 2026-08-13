@@ -234,10 +234,10 @@
     <section class="hero">
       <h1>FlatMaster User Manual</h1>
       <p>
-        Full operational guide for FlatMaster v1.0.4, with strict parser rules for flat and dark libraries,
+        Full operational guide for FlatMaster v1.0.5, with strict parser rules for flat and dark libraries,
         matching priorities, materialization behavior, and output structure.
       </p>
-      <div class="hero-meta">Updated: 2026-03-05 | Target: Windows x64</div>
+      <div class="hero-meta">Updated: 2026-08-13 | Target: Windows x64</div>
       <nav class="toc">
         <a href="#overview">1. What FlatMaster Does</a>
         <a href="#requirements">2. Requirements</a>
@@ -482,8 +482,9 @@
       <h3>Important Constraints</h3>
       <ul>
         <li>Darks are integrated directly (not calibrated as flats).</li>
-        <li>Rows with fewer than 3 flat frames are marked warning and default to unchecked in Matching Details.</li>
-        <li>Unchecked rows remain visible and are excluded only from processing selection.</li>
+        <li>Single-frame groups are selected by default and copied unchanged into the replicated output tree.</li>
+        <li>Two-frame groups default to unchecked; selecting one copies both files unchanged instead of attempting integration.</li>
+        <li>Unchecked rows remain visible and are excluded from both integration and preservation.</li>
       </ul>
     </section>
 
@@ -538,8 +539,8 @@ OutputRoot\Master\Darks\25s\-10degC\MasterDark_25s_-10degC.fits</code></pre>
           </tr>
           <tr>
             <td>Rows auto-unchecked</td>
-            <td>Group has fewer than 3 flats</td>
-            <td>Add more flats to the same directory+exposure group or manually re-enable</td>
+            <td>Group contains exactly 2 flats</td>
+            <td>Add another flat for integration, or enable the row to copy both files unchanged</td>
           </tr>
           <tr>
             <td>Scan speed varies run to run</td>
@@ -551,7 +552,7 @@ OutputRoot\Master\Darks\25s\-10degC\MasterDark_25s_-10degC.fits</code></pre>
     </section>
 
     <section class="footer">
-      <p>Document scope: FlatMaster v1.0.4 behavior as implemented in current repository code.</p>
+      <p>Document scope: FlatMaster v1.0.5 behavior as implemented in current repository code.</p>
       <p>For development internals, refer to architecture and developer guides shipped in the repository.</p>
     </section>
   </main>

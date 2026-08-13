@@ -21,6 +21,20 @@ function parentDir(p){ if (!p) return ""; var i = Math.max(p.lastIndexOf("/"), p
 function ensureDir(p){ if (p && !File.directoryExists(p)) File.createDirectory(p, true); }
 function kexp(x){ return (Math.round(x*1000)/1000).toString(); }
 function baseName(p){ return p.replace(/^.*[\\/]/,''); }
+function tempOutputPath(finalPath, outputExt){ return finalPath + ".flatmaster_tmp." + outputExt; }
+function publishOutput(tempPath, finalPath){
+  if (!File.exists(tempPath)) throw new Error("Temporary output was not created: " + tempPath);
+  var backupPath = finalPath + ".flatmaster_backup";
+  try { if (File.exists(backupPath)) File.remove(backupPath); } catch(_){ }
+  if (File.exists(finalPath)) File.move(finalPath, backupPath);
+  try {
+    File.move(tempPath, finalPath);
+    try { if (File.exists(backupPath)) File.remove(backupPath); } catch(_){ }
+  } catch(e) {
+    try { if (!File.exists(finalPath) && File.exists(backupPath)) File.move(backupPath, finalPath); } catch(_){ }
+    throw e;
+  }
+}
 
 // Enum resolution with fallbacks
 function enumVal(klass, names, defVal){
@@ -83,17 +97,27 @@ function saveImage(win, outPath, hints, outputExt){
 
 function safeNum(x){ return (x===undefined||x===null||isNaN(x)) ? NaN : Number(x); }
 
-function saveSingleFrameAsMaster(srcPath, outPath, hints, outputExt, forDark){
+function setImageTypeKeyword(win, imageType){
+  var existing = win.keywords || [];
+  var keywords = [];
+  for (var i=0; i<existing.length; i++){
+    var keywordName = "";
+    try { keywordName = String(existing[i].name).toUpperCase(); } catch(_){ }
+    if (keywordName !== "IMAGETYP") keywords.push(existing[i]);
+  }
+  keywords.push(new FITSKeyword("IMAGETYP", imageType, "Type of image"));
+  win.keywords = keywords;
+}
+
+function saveSingleFrameAsMaster(srcPath, outPath, hints, outputExt, forDark, imageTypeOverride){
   var wins = ImageWindow.open(String(srcPath));
   if (!wins || !wins.length) throw new Error("Unable to open single input frame: " + srcPath);
   var win = wins[0];
   if (!win) throw new Error("No window returned for single input frame: " + srcPath);
 
   try {
-    var imgType = (!forDark) ? "Master Flat" : "Master Dark";
-    var kws = win.keywords || [];
-    kws.push(new FITSKeyword("IMAGETYP", imgType, "Type of image"));
-    win.keywords = kws;
+    var imgType = imageTypeOverride || ((!forDark) ? "Master Flat" : "Master Dark");
+    setImageTypeKeyword(win, imgType);
   } catch (e) { warn("[metadata] IMAGETYP not set: " + e); }
 
   saveImage(win, outPath, hints, outputExt);
@@ -160,6 +184,10 @@ function isRawDarkType(t){
   return t === "DARKFLAT" || t === "DARK";
 }
 
+function isBiasType(t){
+  return t === "MASTERBIAS" || t === "BIAS";
+}
+
 function chooseBestByScore(candidates, want, match){
   var best = null;
   var bestScore = -1e99;
@@ -206,12 +234,13 @@ function chooseNearest(candidates, exp, want, match){
   return { candidate: best, delta: bestDelta };
 }
 
-function integrateToMaster(paths,outPath,forDark,hints,rej,outputExt){
+function integrateToMaster(paths,outPath,forDark,hints,rej,outputExt,imageTypeOverride){
   if(!paths.length) throw new Error("No frames for "+outPath);
+  ensureDir(parentDir(outPath));
 
   if (paths.length === 1){
     warn("Only 1 input frame; writing single-frame master for " + outPath);
-    saveSingleFrameAsMaster(paths[0], outPath, hints, outputExt, forDark);
+    saveSingleFrameAsMaster(paths[0], outPath, hints, outputExt, forDark, imageTypeOverride);
     return;
   }
 
@@ -294,10 +323,8 @@ function integrateToMaster(paths,outPath,forDark,hints,rej,outputExt){
   if(!win) throw new Error("Integration window not found");
 
   try {
-    var imgType = (!forDark) ? "Master Flat" : "Master Dark";
-    var kws = win.keywords || [];
-    kws.push(new FITSKeyword("IMAGETYP", imgType, "Type of image"));
-    win.keywords = kws;
+    var imgType = imageTypeOverride || ((!forDark) ? "Master Flat" : "Master Dark");
+    setImageTypeKeyword(win, imgType);
   } catch (e) { warn("[metadata] IMAGETYP not set: " + e); }
 
   saveImage(win, outPath, hints, outputExt);
@@ -317,18 +344,27 @@ function integrateToMaster(paths,outPath,forDark,hints,rej,outputExt){
     try{ if (typeof processEvents === "function") processEvents(); }catch(_){}
 }
 
-function calibrateFlats(paths,outDir,masterDarkPath,optimize,hints,outputExt){
+function calibrateFlats(paths,outDir,calibrationPath,calibrationIsBias,optimize,hints,outputExt){
   ensureDir(outDir);
   var IC=new ImageCalibration;
   assignICTargets(IC, paths);
 
-  IC.masterBiasEnabled = false;
   IC.masterFlatEnabled = false;
-  if (masterDarkPath){
+  if (calibrationPath && calibrationIsBias){
+    IC.masterBiasEnabled = true;
+    IC.masterBiasPath = calibrationPath;
+    IC.masterDarkEnabled = false;
+    IC.masterDarkPath = "";
+    IC.optimizeDarks = false;
+  } else if (calibrationPath){
+    IC.masterBiasEnabled = false;
+    IC.masterBiasPath = "";
     IC.masterDarkEnabled = true;
-    IC.masterDarkPath = masterDarkPath;
+    IC.masterDarkPath = calibrationPath;
     IC.optimizeDarks = !!optimize;
   } else {
+    IC.masterBiasEnabled = false;
+    IC.masterBiasPath = "";
     IC.masterDarkEnabled = false;
     IC.masterDarkPath = "";
     IC.optimizeDarks = false;
@@ -361,14 +397,83 @@ function calibrateFlats(paths,outDir,masterDarkPath,optimize,hints,outputExt){
   return out;
 }
 
-function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt){
+function sampledImageMedian(image, gridSize){
+  var grid = Math.max(4, Math.min(64, Math.round(safeNum(gridSize) || 16)));
+  var channels = Math.max(1, image.numberOfNominalChannels || image.numberOfChannels || 1);
+  var values = [];
+  for (var gy=0; gy<grid; gy++){
+    var y = Math.max(0, Math.min(image.height-1, Math.round((gy+0.5)*image.height/grid-0.5)));
+    for (var gx=0; gx<grid; gx++){
+      var x = Math.max(0, Math.min(image.width-1, Math.round((gx+0.5)*image.width/grid-0.5)));
+      for (var c=0; c<channels; c++) values.push(Number(image.sample(x,y,c)));
+    }
+  }
+  values.sort(function(a,b){ return a-b; });
+  if (!values.length) return NaN;
+  var middle = Math.floor(values.length/2);
+  return (values.length % 2) ? values[middle] : 0.5*(values[middle-1]+values[middle]);
+}
+
+function rejectLowSignalCalibratedFlats(paths, minimumMedian, gridSize){
+  var floor = safeNum(minimumMedian);
+  if (isNaN(floor) || floor <= 0) return paths.slice(0);
+
+  var accepted = [];
+  var rejected = [];
+  for (var i=0; i<paths.length; i++){
+    var windows = null;
+    try {
+      windows = ImageWindow.open(paths[i]);
+      if (!windows || !windows.length || !windows[0] || windows[0].isNull)
+        throw new Error("ImageWindow.open returned no image");
+      var sampledMedian = sampledImageMedian(windows[0].mainView.image, gridSize);
+      if (isFinite(sampledMedian) && sampledMedian >= floor){
+        accepted.push(paths[i]);
+      } else {
+        rejected.push({path:paths[i], median:sampledMedian});
+        warn("  [quality] rejected low-signal calibrated flat: median=" +
+             (isFinite(sampledMedian) ? sampledMedian.toFixed(8) : "non-finite") +
+             ", minimum=" + floor.toFixed(8) + ", file=" + paths[i]);
+      }
+    } catch(e) {
+      throw new Error("Cannot sample calibrated flat " + paths[i] + ": " + e);
+    } finally {
+      if (windows){
+        for (var w=0; w<windows.length; w++)
+          try{ if (windows[w] && !windows[w].isNull) windows[w].forceClose(); }catch(_){ }
+      }
+    }
+  }
+
+  log("  [quality] calibrated-flat signal check: accepted " + accepted.length +
+      "/" + paths.length + ", rejected " + rejected.length +
+      " (" + Math.max(4, Math.min(64, Math.round(safeNum(gridSize) || 16))) + "x" +
+      Math.max(4, Math.min(64, Math.round(safeNum(gridSize) || 16))) + " samples)");
+  if (accepted.length < 3)
+    throw new Error("Only " + accepted.length + " calibrated flats remain above the minimum signal " +
+                    floor.toFixed(8) + " after rejecting " + rejected.length +
+                    " dark/no-signal frame(s); no meaningful master flat can be generated.");
+  return accepted;
+}
+
+function geometryCompatible(candidate, want){
+  var ww = safeNum(want && want.width), wh = safeNum(want && want.height), wc = safeNum(want && want.channels);
+  if (isNaN(ww) || ww <= 0 || isNaN(wh) || wh <= 0) return true;
+  var cw = safeNum(candidate && candidate.width), ch = safeNum(candidate && candidate.height), cc = safeNum(candidate && candidate.channels);
+  if (isNaN(cw) || cw <= 0 || isNaN(ch) || ch <= 0) return false;
+  if (isNaN(wc) || wc <= 0) wc = 1;
+  if (isNaN(cc) || cc <= 0) cc = 1;
+  return cw === ww && ch === wh && cc === wc;
+}
+
+function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt, biasMasterCache){
   if (want && want.manualDarkPath){
     var requested = String(want.manualDarkPath).replace(/\\/g,"/").toLowerCase();
     for (var m=0; m<cats.length; m++){
       var forced = cats[m];
       var fp = String(forced.path).replace(/\\/g,"/").toLowerCase();
-      if (fp === requested){
-        return { path: forced.path, optimize: false, kind: "Override " + typeLabel(forced.type) };
+      if (fp === requested && geometryCompatible(forced, want)){
+        return { path: forced.path, isBias: isBiasType(forced.type), optimize: false, kind: "Override " + typeLabel(forced.type) };
       }
     }
   }
@@ -378,6 +483,8 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt){
     for (var i=0;i<cats.length;i++){
       var c = cats[i];
       if (!isDarkCalibrationType(c.type) || !typePredicate(c.type)) continue;
+      if (!geometryCompatible(c, want)) continue;
+      if (match.enforceBinning && want.binning && c.binning && String(c.binning).toUpperCase() !== String(want.binning).toUpperCase()) continue;
       if (!isTempAllowed(c, want, match, tempMax)) continue;
       var cexp = safeNum(c.exposure);
       if (isNaN(cexp)) continue;
@@ -399,13 +506,13 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt){
     // 1) Master dark exact match.
     var p1 = pickFromBucket(isMasterDarkType, 0, 0, true, tempMax);
     if (p1){
-      return { path: p1.path, optimize: false, kind: "P1 " + typeLabel(p1.type) + "(exact" + suffix + ")" };
+      return { path: p1.path, isBias: false, optimize: false, kind: "P1 " + typeLabel(p1.type) + "(exact" + suffix + ")" };
     }
 
     // 2) Loose/raw dark exact match.
     var p2 = pickFromBucket(isRawDarkType, 0, 0, true, tempMax);
     if (p2){
-      return { path: p2.path, optimize: false, kind: "P2 " + typeLabel(p2.type) + "(exact" + suffix + ")" };
+      return { path: p2.path, isBias: false, optimize: false, kind: "P2 " + typeLabel(p2.type) + "(exact" + suffix + ")" };
     }
 
     // 3) Master dark within +/-2s.
@@ -413,6 +520,7 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt){
     if (p3){
       return {
         path: p3.path,
+        isBias: false,
         optimize: false,
         kind: "P3 " + typeLabel(p3.type) + "(nearest<=2s," + kexp(p3.exposure) + "s" + suffix + ")"
       };
@@ -423,36 +531,147 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt){
     if (p4){
       return {
         path: p4.path,
+        isBias: false,
         optimize: false,
         kind: "P4 " + typeLabel(p4.type) + "(nearest<=2s," + kexp(p4.exposure) + "s" + suffix + ")"
       };
     }
 
-    // 5) Master dark within +/-10s (outside +/-2s).
-    var p5 = pickFromBucket(isMasterDarkType, 2.0, 10.0, false, tempMax);
+    // 5) Master dark within +/-10s (outside +/-2s), with optimization.
+    var allowOptimizedNearest = CFG.allowNearestExposureWithOptimize !== false;
+    var p5 = allowOptimizedNearest ? pickFromBucket(isMasterDarkType, 2.0, 10.0, false, tempMax) : null;
     if (p5){
       return {
         path: p5.path,
-        optimize: false,
-        kind: "P5 " + typeLabel(p5.type) + "(nearest<=10s," + kexp(p5.exposure) + "s" + suffix + ")"
+        isBias: false,
+        optimize: true,
+        kind: "P5 " + typeLabel(p5.type) + "(nearest<=10s,optimize," + kexp(p5.exposure) + "s" + suffix + ")"
       };
     }
 
-    // 6) Loose/raw dark within +/-10s (outside +/-2s).
-    var p6 = pickFromBucket(isRawDarkType, 2.0, 10.0, false, tempMax);
+    // 6) Loose/raw dark within +/-10s (outside +/-2s), with optimization.
+    var p6 = allowOptimizedNearest ? pickFromBucket(isRawDarkType, 2.0, 10.0, false, tempMax) : null;
     if (p6){
       return {
         path: p6.path,
-        optimize: false,
-        kind: "P6 " + typeLabel(p6.type) + "(nearest<=10s," + kexp(p6.exposure) + "s" + suffix + ")"
+        isBias: false,
+        optimize: true,
+        kind: "P6 " + typeLabel(p6.type) + "(nearest<=10s,optimize," + kexp(p6.exposure) + "s" + suffix + ")"
       };
     }
 
     return null;
   }
 
+  // A bias is the zero-second member of the dark-calibration family. Gather
+  // compatible bias candidates up front so they can compete by exposure
+  // distance instead of being considered only after all dark priorities fail.
+  var masterBias = [];
+  var bias = [];
+  for (var k=0;k<cats.length;k++){
+    var b = cats[k];
+    if (!geometryCompatible(b, want)) continue;
+    if (match.enforceBinning && want.binning && b.binning &&
+        String(b.binning).toUpperCase() !== String(want.binning).toUpperCase()) continue;
+    if (b.type === "MASTERBIAS") masterBias.push(b);
+    else if (b.type === "BIAS") bias.push(b);
+  }
+
+  var preferredBias = masterBias.length
+    ? chooseBestByScore(masterBias, want, match)
+    : (bias.length ? chooseBestByScore(bias, want, match) : null);
+
+  function buildBiasSelection(reason){
+    var suffix = reason ? "(" + reason + ")" : "";
+    if (masterBias.length){
+      var bestMasterBias = chooseBestByScore(masterBias, want, match);
+      return { path: bestMasterBias.path, isBias: true, optimize: false, kind: "P7 MasterBias" + suffix };
+    }
+
+    if (bias.length >= 3){
+      var biasIdentity = [
+        String(want.binning || "unknown"),
+        isNaN(safeNum(want.gain)) ? "unknown" : String(safeNum(want.gain)),
+        isNaN(safeNum(want.offset)) ? "unknown" : String(safeNum(want.offset)),
+        String(safeNum(want.width) || 0),
+        String(safeNum(want.height) || 0),
+        String(safeNum(want.channels) || 1)
+      ].join("_").replace(/[^A-Za-z0-9_.-]/g, "-");
+      var outBias = joinPath(cacheDir, "MasterBias_" + biasIdentity + "." + outExt);
+      var cacheKey = String(outBias).replace(/\\/g,"/").toLowerCase();
+      if (biasMasterCache && biasMasterCache[cacheKey] && File.exists(outBias)){
+        return { path: outBias, isBias: true, optimize: false, kind: "P7 Bias(cached)" + suffix };
+      }
+
+      // Rebuild once per PixInsight invocation. Removing an older cache first
+      // avoids an interactive overwrite prompt that can stall automation.
+      try { if (File.exists(outBias)) File.remove(outBias); } catch(e) {
+        throw new Error("Cannot replace cached master bias " + outBias + ": " + e);
+      }
+      integrateToMaster(bias.map(function(x){ return x.path; }), outBias, true, hintsCal, rej, outExt, "Master Bias");
+      if (biasMasterCache) biasMasterCache[cacheKey] = true;
+      return { path: outBias, isBias: true, optimize: false, kind: "P7 Bias(built)" + suffix };
+    }
+
+    if (bias.length){
+      var bestBias = chooseBestByScore(bias, want, match);
+      return { path: bestBias.path, isBias: true, optimize: false, kind: "P7 Bias(single)" + suffix };
+    }
+
+    return null;
+  }
+
+  function biasPreferenceReason(darkSelection){
+    if (!preferredBias || !darkSelection) return null;
+
+    var selected = null;
+    for (var x=0; x<cats.length; x++){
+      if (String(cats[x].path) === String(darkSelection.path)){
+        selected = cats[x];
+        break;
+      }
+    }
+    if (!selected) return "dark candidate unavailable";
+
+    var selectedExposure = safeNum(selected.exposure);
+    var biasExposure = safeNum(preferredBias.exposure);
+    if (isNaN(biasExposure)) biasExposure = 0;
+    var darkExposureDelta = isNaN(selectedExposure) ? NaN : Math.abs(selectedExposure - exp);
+    var biasExposureDelta = Math.abs(biasExposure - exp);
+
+    if (!isNaN(darkExposureDelta) && biasExposureDelta + 0.001 < darkExposureDelta){
+      return "closer exposure: bias delta " + kexp(biasExposureDelta) +
+             "s < dark delta " + kexp(darkExposureDelta) + "s";
+    }
+
+    var exposureLimit = safeNum(match.darkOverBiasExposureDeltaSeconds);
+    if (!isNaN(exposureLimit) && exposureLimit > 0 &&
+        !isNaN(darkExposureDelta) && darkExposureDelta > exposureLimit){
+      return "dark exposure delta " + kexp(darkExposureDelta) +
+             "s exceeds " + kexp(exposureLimit) + "s";
+    }
+
+    var tempLimit = safeNum(match.darkOverBiasTempDeltaC);
+    var selectedTemp = safeNum(selected.temp);
+    var wantedTemp = safeNum(want.temp);
+    if (!isNaN(tempLimit) && tempLimit > 0 &&
+        !isNaN(selectedTemp) && !isNaN(wantedTemp)){
+      var tempDelta = Math.abs(selectedTemp - wantedTemp);
+      if (tempDelta > tempLimit){
+        return "dark temperature delta " + tempDelta.toFixed(1) +
+               "C exceeds " + tempLimit.toFixed(1) + "C";
+      }
+    }
+
+    return null;
+  }
+
   var strict = runDarkPriorityPass(match.maxTempDeltaC, "");
-  if (strict) return strict;
+  if (strict){
+    var strictBiasReason = biasPreferenceReason(strict);
+    if (strictBiasReason) return buildBiasSelection(strictBiasReason);
+    return strict;
+  }
 
   var darkOverBiasTempThreshold = safeNum(match.darkOverBiasTempDeltaC);
   var darkOverBiasExposureThreshold = safeNum(match.darkOverBiasExposureDeltaSeconds);
@@ -460,56 +679,19 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt){
       (!isNaN(darkOverBiasExposureThreshold) && darkOverBiasExposureThreshold > 0)){
     var unrestricted = runDarkPriorityPass(Number.POSITIVE_INFINITY, "");
     if (unrestricted){
-      var hasBias = false;
-      var selectedTemp = NaN;
-      var selectedExposure = NaN;
-      for (var x=0; x<cats.length; x++){
-        var c = cats[x];
-        if (c.type === "MASTERBIAS" || c.type === "BIAS") hasBias = true;
-        if (String(c.path) === String(unrestricted.path)){
-          selectedTemp = safeNum(c.temp);
-          selectedExposure = safeNum(c.exposure);
-        }
-      }
+      var unrestrictedBiasReason = biasPreferenceReason(unrestricted);
+      if (unrestrictedBiasReason) return buildBiasSelection(unrestrictedBiasReason);
 
-      var wt = safeNum(want.temp);
-      var dt = (!isNaN(selectedTemp) && !isNaN(wt)) ? Math.abs(selectedTemp - wt) : NaN;
-      var de = !isNaN(selectedExposure) ? Math.abs(selectedExposure - exp) : NaN;
-      var tempWithin = isNaN(darkOverBiasTempThreshold) || darkOverBiasTempThreshold <= 0 || isNaN(dt) || dt <= darkOverBiasTempThreshold;
-      var exposureWithin = isNaN(darkOverBiasExposureThreshold) || darkOverBiasExposureThreshold <= 0 || isNaN(de) || de <= darkOverBiasExposureThreshold;
-      if (!hasBias || (tempWithin && exposureWithin)){
-        var tempLabel = isNaN(darkOverBiasTempThreshold) ? "n/a" : darkOverBiasTempThreshold.toFixed(1);
-        var expLabel = isNaN(darkOverBiasExposureThreshold) ? "n/a" : darkOverBiasExposureThreshold.toFixed(3);
-        unrestricted.kind = unrestricted.kind + ",temp<=" + tempLabel + "C,exp<=" + expLabel + "s";
-        return unrestricted;
-      }
+      var tempLabel = isNaN(darkOverBiasTempThreshold) ? "n/a" : darkOverBiasTempThreshold.toFixed(1);
+      var expLabel = isNaN(darkOverBiasExposureThreshold) ? "n/a" : darkOverBiasExposureThreshold.toFixed(3);
+      unrestricted.kind = unrestricted.kind + ",temp<=" + tempLabel + "C,exp<=" + expLabel + "s";
+      return unrestricted;
     }
   }
 
-  // 7) Bias fallback.
-  var masterBias = [];
-  var bias = [];
-  for (var k=0;k<cats.length;k++){
-    var b = cats[k];
-    if (b.type === "MASTERBIAS") masterBias.push(b);
-    else if (b.type === "BIAS") bias.push(b);
-  }
-
-  if (masterBias.length){
-    var bestMasterBias = chooseBestByScore(masterBias, want, match);
-    return { path: bestMasterBias.path, optimize: false, kind: "P7 MasterBias" };
-  }
-
-  if (bias.length >= 3){
-    var outBias = joinPath(cacheDir, "MasterBias." + outExt);
-    integrateToMaster(bias.map(function(x){ return x.path; }), outBias, true, hintsCal, rej, outExt);
-    return { path: outBias, optimize: false, kind: "P7 Bias(built)" };
-  }
-
-  if (bias.length){
-    var bestBias = chooseBestByScore(bias, want, match);
-    return { path: bestBias.path, optimize: false, kind: "P7 Bias(single)" };
-  }
+  // No usable dark: use the compatible zero-second calibration candidate.
+  var biasFallback = buildBiasSelection("no suitable dark");
+  if (biasFallback) return biasFallback;
 
   // 8) No dark/bias found.
   return null;
@@ -553,6 +735,7 @@ function run(){
   var outExt = String(CFG.outputExtension || "xisf").toLowerCase();
   if (outExt !== "fits") outExt = "xisf";
   var match = CFG.match || {};
+  var biasMasterCache = {};
 
   for (var j=0;j<plan.length;j++){
     var job=plan[j], dir=job.dirPath;
@@ -570,6 +753,9 @@ function run(){
       if (want.gain === undefined) want.gain = null;
       if (want.offset === undefined) want.offset = null;
       if (want.temp === undefined) want.temp = null;
+      if (want.width === undefined) want.width = 0;
+      if (want.height === undefined) want.height = 0;
+      if (want.channels === undefined) want.channels = 1;
 
       log("  Exposure "+kexp(exp)+" s : "+files.length+" flats");
 
@@ -577,19 +763,19 @@ function run(){
       var filt = guessFilterFrom(files, dir);
       var masterName = "MasterFlat_" + dateStr + "_" + filt + "_" + kexp(exp) + "s." + outExt;
       var masterOut = joinPath(outBase, masterName);
-
-      if (File.exists(masterOut)){
-        log("  SKIP (master already exists): " + masterOut);
-        continue;
-      }
+      var masterTemp = tempOutputPath(masterOut, outExt);
+      try { if (File.exists(masterTemp)) File.remove(masterTemp); } catch(_){ }
 
       var cacheDir = joinPath(dir, CFG.cacheDirName||"_DarkMasters");
-      var sel = pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt);
+      var sel = pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt, biasMasterCache);
 
       if(!sel || !sel.path){
+        if (CFG.requireDarks)
+          throw new Error("No suitable dark/bias for required calibration @ " + kexp(exp) + " s in " + dir);
         warn("  No suitable dark/bias @ " + kexp(exp) + " s in " + dir + " - integrating flats without subtraction.");
         pulse("NO_DARK_BEFORE_INTEGRATE");
-        integrateToMaster(files, masterOut, false, hintsMaster, rej, outExt);
+        integrateToMaster(files, masterTemp, false, hintsMaster, rej, outExt);
+        publishOutput(masterTemp, masterOut);
         pulse("NO_DARK_AFTER_INTEGRATE");
         for (var pe1=0; pe1<10; pe1++)
           try{ if (typeof processEvents === "function") processEvents(); }catch(_){}
@@ -597,14 +783,14 @@ function run(){
         continue;
       }
 
-      log("  Using ["+sel.kind+"] optimize="+sel.optimize);
+      log("  Using ["+sel.kind+"] calibration="+(sel.isBias ? "bias" : "dark")+" optimize="+sel.optimize);
 
       var calOut = joinPath(outBase, (CFG.calibratedSubdirBase||"_CalibratedFlats")+"_"+kexp(exp)+"s");
       var calFiles = [];
       var usedDarkCalibration = false;
       try{
         pulse("DARK_BEFORE_CALIBRATE");
-        calFiles = calibrateFlats(files, calOut, sel.path, sel.optimize, hintsCal, outExt) || [];
+        calFiles = calibrateFlats(files, calOut, sel.path, !!sel.isBias, sel.optimize, hintsCal, outExt) || [];
         pulse("DARK_AFTER_CALIBRATE");
 
         if(!calFiles.length){
@@ -617,19 +803,20 @@ function run(){
           ff.end();
         }
 
-        if (calFiles.length >= 3){
-          usedDarkCalibration = true;
-        } else {
-          warn("  Calibration produced fewer than 3 calibrated flats; using original flats for integration.");
-          calFiles = files.slice(0);
-        }
+        if (calFiles.length < 3)
+          throw new Error("Calibration produced fewer than 3 calibrated flats.");
+        calFiles = rejectLowSignalCalibratedFlats(
+          calFiles,
+          CFG.minimumCalibratedFlatMedian,
+          CFG.flatSignalSampleGrid);
+        usedDarkCalibration = true;
       } catch (calErr){
-        warn("  Calibration with selected dark failed (" + calErr + "); using original flats for integration.");
-        calFiles = files.slice(0);
+        throw new Error("Calibration with selected dark failed: " + calErr);
       }
 
       pulse("DARK_BEFORE_INTEGRATE");
-      integrateToMaster(calFiles, masterOut, false, hintsMaster, rej, outExt);
+      integrateToMaster(calFiles, masterTemp, false, hintsMaster, rej, outExt);
+      publishOutput(masterTemp, masterOut);
       pulse("DARK_AFTER_INTEGRATE");
       for (var pe2=0; pe2<10; pe2++)
         try{ if (typeof processEvents === "function") processEvents(); }catch(_){}
