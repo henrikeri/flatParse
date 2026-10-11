@@ -18,7 +18,19 @@ function warn(s){ try{ if (typeof Console !== "undefined" && Console.warningln) 
 function error(s){ try{ if (typeof Console !== "undefined" && Console.criticalln) Console.criticalln(s); }catch(e){} }
 function joinPath(a,b){ if(!a)return b; var slash=(a.indexOf("\\")>=0)?"\\":"/"; if(a.endsWith("/")||a.endsWith("\\"))return a+b; return a+slash+b; }
 function parentDir(p){ if (!p) return ""; var i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")); return i>0 ? p.substring(0,i) : ""; }
-function ensureDir(p){ if (p && !File.directoryExists(p)) File.createDirectory(p, true); }
+function ensureDir(p){
+  if (!p) return;
+  p = String(p).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (/^[A-Za-z]:$/.test(p)) p += "/";
+  if (File.directoryExists(p)) return;
+  // Never ask PixInsight's recursive mkdir to walk above a UNC share.
+  if (/^\/\/[^\/]+(?:\/[^\/]+)?$/.test(p) || /^[A-Za-z]:\/$/.test(p) || p === "")
+    throw new Error("Output drive or network share is unavailable: " + p);
+  var parent = parentDir(p);
+  if (!parent || parent === p) throw new Error("Invalid output directory: " + p);
+  ensureDir(parent);
+  File.createDirectory(p, false);
+}
 function kexp(x){ return (Math.round(x*1000)/1000).toString(); }
 function baseName(p){ return p.replace(/^.*[\\/]/,''); }
 function tempOutputPath(finalPath, outputExt){ return finalPath + ".flatmaster_tmp." + outputExt; }
@@ -776,6 +788,7 @@ function run(){
         pulse("NO_DARK_BEFORE_INTEGRATE");
         integrateToMaster(files, masterTemp, false, hintsMaster, rej, outExt);
         publishOutput(masterTemp, masterOut);
+        touch(grp.completionPath, JSON.stringify({masterPath:masterOut, integratedFrameCount:files.length}));
         pulse("NO_DARK_AFTER_INTEGRATE");
         for (var pe1=0; pe1<10; pe1++)
           try{ if (typeof processEvents === "function") processEvents(); }catch(_){}
@@ -817,6 +830,7 @@ function run(){
       pulse("DARK_BEFORE_INTEGRATE");
       integrateToMaster(calFiles, masterTemp, false, hintsMaster, rej, outExt);
       publishOutput(masterTemp, masterOut);
+      touch(grp.completionPath, JSON.stringify({masterPath:masterOut, integratedFrameCount:calFiles.length}));
       pulse("DARK_AFTER_INTEGRATE");
       for (var pe2=0; pe2<10; pe2++)
         try{ if (typeof processEvents === "function") processEvents(); }catch(_){}

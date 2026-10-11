@@ -29,6 +29,29 @@ dotnet run --project src/FlatMaster.WPF
 
 Or open `FlatMaster.sln` in Visual Studio and press F5.
 
+## Matching existing and newly added flats
+
+Scan the input roots with the intended output folder selected, then run matching.
+Matching Details shows every scanned group, with included groups sorted first.
+Completed outputs default to unchecked; checking Include explicitly allows reprocessing.
+
+The summary counts completed, included, changed, and failed groups. Use Include
+pending to select work needing attention, Clear inclusion to uncheck everything,
+or Ctrl/Shift-select rows and choose Include selected rows. Hover over Output
+status for details and use Open master to open an available output through its
+Windows file association.
+
+New masters store their input inventory and camera settings in an adjacent
+`.meta.json` file. Attempt records live in `.FlatMaster` under the mirrored output
+directory. Keep these files with the outputs. On the next scan, added, removed,
+or modified inputs appear as Changed inputs; interrupted or failed attempts
+appear as Failed. Older masters without a recorded inventory remain Completed,
+with an explanatory tooltip. Reprocessing them creates provenance for future
+comparisons.
+
+Processing retains the full matching list afterward. Successfully completed
+groups return to unchecked, while reports describe only the groups in that run.
+
 ## Project Structure
 
 ```

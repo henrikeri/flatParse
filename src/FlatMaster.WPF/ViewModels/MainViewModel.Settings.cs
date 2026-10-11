@@ -35,6 +35,8 @@ public partial class MainViewModel
     private readonly HashSet<DirectoryJobViewModel> _trackedFlatDirectoryViewModels = [];
     private readonly HashSet<DarkFrameViewModel> _trackedDarkFrameViewModels = [];
     private HashSet<string> _savedSelectedFlatDirectories = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _savedKnownFlatDirectories = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _savedExplicitlyDeselectedFlatDirectories = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _savedDeselectedDarkFiles = new(StringComparer.OrdinalIgnoreCase);
 
     private void InitializeUserSettingsPersistence()
@@ -87,6 +89,11 @@ public partial class MainViewModel
                 ReplaceCollection(DarkLibraryRoots, settings.DarkLibraryRoots);
 
                 _savedSelectedFlatDirectories = NormalizeDistinctPaths(settings.SelectedFlatDirectories)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                _savedKnownFlatDirectories = NormalizeDistinctPaths(settings.KnownFlatDirectories)
+                    .Concat(_savedSelectedFlatDirectories)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                _savedExplicitlyDeselectedFlatDirectories = NormalizeDistinctPaths(settings.ExplicitlyDeselectedFlatDirectories)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 _savedDeselectedDarkFiles = NormalizeDistinctPaths(settings.DeselectedDarkFilePaths)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -183,6 +190,11 @@ public partial class MainViewModel
             SelectedFlatDirectories = _savedSelectedFlatDirectories
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToList(),
+            KnownFlatDirectories = _savedKnownFlatDirectories
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            ExplicitlyDeselectedFlatDirectories = _savedExplicitlyDeselectedFlatDirectories
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
             DeselectedDarkFilePaths = _savedDeselectedDarkFiles
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToList()
@@ -261,7 +273,7 @@ public partial class MainViewModel
 
     private void ApplySavedFlatSelections()
     {
-        if (_savedSelectedFlatDirectories.Count == 0)
+        if (_savedExplicitlyDeselectedFlatDirectories.Count == 0)
             return;
 
         _isApplyingUserSettings = true;
@@ -270,7 +282,10 @@ public partial class MainViewModel
             foreach (var vm in FlatDirectories)
             {
                 var key = NormalizePathForStorage(vm.DirectoryPath);
-                vm.IsSelected = _savedSelectedFlatDirectories.Contains(key);
+                // Automatic completion defaults are recalculated on each scan.
+                // Only an explicit user exclusion persists when inputs change.
+                if (_savedExplicitlyDeselectedFlatDirectories.Contains(key))
+                    vm.SetSelection(false, isExplicit: true);
             }
         }
         finally
@@ -352,6 +367,13 @@ public partial class MainViewModel
             .Where(vm => vm.IsSelected)
             .Select(vm => NormalizePathForStorage(vm.DirectoryPath))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _savedKnownFlatDirectories = _trackedFlatDirectoryViewModels
+            .Select(vm => NormalizePathForStorage(vm.DirectoryPath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _savedExplicitlyDeselectedFlatDirectories = _trackedFlatDirectoryViewModels
+            .Where(vm => vm.HasExplicitSelection && !vm.IsSelected)
+            .Select(vm => NormalizePathForStorage(vm.DirectoryPath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private void RefreshCachedDarkSelections()
@@ -381,6 +403,8 @@ public partial class MainViewModel
         public List<string> FlatBaseRoots { get; init; } = [];
         public List<string> DarkLibraryRoots { get; init; } = [];
         public List<string> SelectedFlatDirectories { get; init; } = [];
+        public List<string> KnownFlatDirectories { get; init; } = [];
+        public List<string> ExplicitlyDeselectedFlatDirectories { get; init; } = [];
         public List<string> DeselectedDarkFilePaths { get; init; } = [];
     }
 }

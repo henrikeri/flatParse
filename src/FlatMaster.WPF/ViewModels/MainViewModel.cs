@@ -291,8 +291,12 @@ public partial class MainViewModel : ObservableObject
         RaiseTabWorkflowStateChanged();
     }
 
-    partial void OnMatchingGroupsChanged(ObservableCollection<MatchingGroupViewModel> value)
+    partial void OnMatchingGroupsChanged(ObservableCollection<MatchingGroupViewModel>? oldValue, ObservableCollection<MatchingGroupViewModel> newValue)
     {
+        if (oldValue != null)
+            foreach (var group in oldValue) group.PropertyChanged -= OnMatchingGroupSelectionChanged;
+        foreach (var group in newValue) group.PropertyChanged += OnMatchingGroupSelectionChanged;
+        OnPropertyChanged(nameof(MatchingSummary));
         RaiseTabWorkflowStateChanged();
     }
 

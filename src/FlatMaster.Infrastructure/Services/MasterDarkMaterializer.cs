@@ -66,26 +66,19 @@ public sealed class MasterDarkMaterializer(
         var failures = new System.Collections.Concurrent.ConcurrentBag<string>();
         var planLock = new object();
 
-        // Detect required raw-dark folders using shared logic
-        var requiredFolders = DetectRequiredFolders(plan, darkRoots);
+        // Determine required raw-dark folders and existing masters from the same matches.
+        var requiredMasters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var requiredFolders = DetectRequiredFolders(plan, darkRoots, requiredMasters);
 
-        if (requiredFolders.Count == 0)
+        void ImportRequiredMasters()
         {
-            _logger.LogDebug("MasterDarkMaterializer: No raw-dark folders require materialization.");
-            Report("[MasterDark] No raw dark folders require materialization.");
-            // Import existing masters referenced in the catalog under the output root
+            // Import only existing masters chosen by matching, alongside any raw-dark builds.
             try
             {
-                var outputRoot = plan.Jobs.FirstOrDefault()?.OutputRootPath;
+                var outputRoot = plan.SelectedJobs.FirstOrDefault()?.OutputRootPath;
                 if (!string.IsNullOrWhiteSpace(outputRoot))
                 {
-                    var masters = plan.DarkCatalog
-                        .Where(d => d.Type == ImageType.MasterDark || d.Type == ImageType.MasterDarkFlat)
-                        .Select(d => d.FilePath)
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList();
-
-                    foreach (var mpath in masters)
+                    foreach (var mpath in requiredMasters)
                     {
                         try
                         {
@@ -199,7 +192,14 @@ public sealed class MasterDarkMaterializer(
             {
                 _logger.LogDebug(ex, "Post-scan import of existing masters failed: {Msg}", ex.Message);
             }
+        }
 
+        ImportRequiredMasters();
+
+        if (requiredFolders.Count == 0)
+        {
+            _logger.LogDebug("MasterDarkMaterializer: No raw-dark folders require materialization.");
+            Report("[MasterDark] No raw dark folders require materialization.");
             return [.. createdBag];
         }
 
@@ -947,12 +947,15 @@ public sealed class MasterDarkMaterializer(
         }
     }
 
-    private Dictionary<string, List<(DirectoryJob job, ExposureGroup group)>> DetectRequiredFolders(ProcessingPlan plan, IEnumerable<string> darkRoots)
+    private Dictionary<string, List<(DirectoryJob job, ExposureGroup group)>> DetectRequiredFolders(
+        ProcessingPlan plan,
+        IEnumerable<string> darkRoots,
+        ISet<string>? requiredMasters = null)
     {
         var requiredFolders = new Dictionary<string, List<(DirectoryJob job, ExposureGroup group)>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var job in plan.Jobs)
+        foreach (var job in plan.SelectedJobs)
         {
-            foreach (var group in job.ExposureGroups)
+            foreach (var group in job.ExposureGroups.Where(g => g.IsValid))
             {
                 var match = _darkMatcher.FindBestDark(group, plan.DarkCatalog, plan.Configuration.DarkMatching);
                 if (match == null) continue;
@@ -963,6 +966,12 @@ public sealed class MasterDarkMaterializer(
                 var catalogEntry = plan.DarkCatalog.FirstOrDefault(d => string.Equals(Path.GetFullPath(d.FilePath), Path.GetFullPath(matchedPath), StringComparison.OrdinalIgnoreCase));
                 if (catalogEntry == null)
                     continue;
+
+                if (catalogEntry.Type is ImageType.MasterDark or ImageType.MasterDarkFlat)
+                {
+                    requiredMasters?.Add(Path.GetFullPath(catalogEntry.FilePath));
+                    continue;
+                }
 
                 // Only materialize loose raw dark matches (priorities 2/4/6).
                 if (catalogEntry.Type is not ImageType.Dark and not ImageType.DarkFlat)

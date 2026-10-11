@@ -26,6 +26,11 @@ public sealed class NativeProcessingServiceTests
 
             result.Success.Should().BeTrue();
             Directory.GetFiles(root, "MasterFlat_*.fits").Should().ContainSingle();
+            var manifest = FlatOutputProvenance.Read(Directory.GetFiles(root, "MasterFlat_*.fits").Single() + ".meta.json")!;
+            manifest.InputFrameCount.Should().Be(4);
+            manifest.IntegratedFrameCount.Should().Be(3);
+            ExistingFlatOutputService.Refresh(plan.Jobs, root);
+            plan.Jobs.Single().ExposureGroups.Single().OutputStatus.Should().Be(FlatOutputStatus.Completed);
             progress.Messages.Should().Contain(message =>
                 message.Contains("accepted 3/4, rejected 1", StringComparison.Ordinal));
         }
@@ -49,6 +54,8 @@ public sealed class NativeProcessingServiceTests
             result.Success.Should().BeFalse();
             result.FailedBatches.Should().Be(1);
             Directory.GetFiles(root, "MasterFlat_*.fits").Should().BeEmpty();
+            ExistingFlatOutputService.Refresh(plan.Jobs, root);
+            plan.Jobs.Single().ExposureGroups.Single().OutputStatus.Should().Be(FlatOutputStatus.Failed);
             progress.Messages.Should().Contain(message =>
                 message.Contains("no meaningful master flat can be generated", StringComparison.OrdinalIgnoreCase));
         }

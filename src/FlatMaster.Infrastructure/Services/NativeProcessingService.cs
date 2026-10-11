@@ -75,8 +75,10 @@ public sealed partial class NativeProcessingService(
             {
                 if (cancellationToken.IsCancellationRequested) break;
 
+                FlatMasterManifest? attempt = null;
                 try
                 {
+                    attempt = FlatOutputProvenance.Begin(job, group, "Native");
                     progress.Report(string.Format(
                         CultureInfo.InvariantCulture,
                         "  Resolving dark match for {0:F3}s ({1} frames)...",
@@ -90,6 +92,7 @@ public sealed partial class NativeProcessingService(
                     {
                         if (plan.Configuration.RequireDarks)
                         {
+                            FlatOutputProvenance.Fail(attempt, "No suitable dark/bias for required calibration");
                             progress.Report(string.Format(CultureInfo.InvariantCulture, "  ! No dark/bias for {0:F3}s - skipped", group.ExposureTime));
                             failureCount++;
                             failureFileCount += group.FilePaths.Count;
@@ -108,17 +111,19 @@ public sealed partial class NativeProcessingService(
 
                     await ProcessGroupAsync(
                         io, group, darkMatch, job, plan.Configuration,
-                        progress, cancellationToken);
+                        attempt, progress, cancellationToken);
 
                     successCount++;
                     successFileCount += group.FilePaths.Count;
                 }
                 catch (OperationCanceledException)
                 {
+                    if (attempt != null) FlatOutputProvenance.Fail(attempt, "Processing cancelled");
                     throw;
                 }
                 catch (Exception ex)
                 {
+                    if (attempt != null) FlatOutputProvenance.Fail(attempt, ex.Message);
                     _logger.LogError(ex, "Failed group {Exp}s", group.ExposureTime);
                     progress.Report($"  ERROR: {ex.Message}");
                     failureCount++;
@@ -154,6 +159,7 @@ public sealed partial class NativeProcessingService(
         DarkMatchResult? darkMatch,
         DirectoryJob job,
         ProcessingConfiguration config,
+        FlatMasterManifest attempt,
         IProgress<string> progress,
         CancellationToken ct)
     {
@@ -364,6 +370,7 @@ public sealed partial class NativeProcessingService(
 
         progress.Report($"  Writing: {masterPath}");
         await WriteImageAsync(masterPath, master, outputExt, ct);
+        FlatOutputProvenance.Complete(attempt, masterPath, n);
         progress.Report($"  [OK] Master flat written ({master.Width}x{master.Height}, {n} frames integrated)");
     }
 

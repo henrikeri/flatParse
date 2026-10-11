@@ -54,6 +54,7 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                 {
                     exposure = g.ExposureTime,
                     files = g.FilePaths.Select(NormalizePath).ToArray(),
+                    completionPath = NormalizePath(FlatOutputProvenance.ReceiptPath(sentinelPath, j, g)),
                     want = new
                     {
                         binning = g.MatchingCriteria?.Binning,
@@ -198,13 +199,45 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
             TryDeleteFile(sentinelPath + ".progress");
 
             ProcessingResult batchResult;
+            var attempts = new List<(FlatMasterManifest Manifest, string Receipt)>();
             try
             {
+                if (!UsesDarkTemplate(plan))
+                {
+                    foreach (var job in batchJobs)
+                    foreach (var group in job.ExposureGroups)
+                    {
+                        var receipt = FlatOutputProvenance.ReceiptPath(sentinelPath, job, group);
+                        TryDeleteFile(receipt);
+                        attempts.Add((FlatOutputProvenance.Begin(job, group, "PixInsight"), receipt));
+                    }
+                }
                 batchResult = await ExecuteWithVariantsAsync(
                     scriptPath, pixInsightExe, sentinelPath, "OK", logOutput, cancellationToken);
+                foreach (var attempt in attempts)
+                {
+                    if (File.Exists(attempt.Receipt))
+                    {
+                        FlatOutputProvenance.CompleteFromReceipt(attempt.Manifest, attempt.Receipt);
+                    }
+                    else
+                    {
+                        var reason = batchResult.ErrorMessage ?? "PixInsight did not publish this group's output master";
+                        FlatOutputProvenance.Fail(attempt.Manifest, reason);
+                        if (batchResult.Success)
+                            batchResult = batchResult with { Success = false, ExitCode = -1, ErrorMessage = reason };
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                foreach (var attempt in attempts.Where(a => a.Manifest.State == "Running"))
+                    FlatOutputProvenance.Fail(attempt.Manifest, ex.Message);
+                throw;
             }
             finally
             {
+                foreach (var attempt in attempts) TryDeleteFile(attempt.Receipt);
                 TryDeleteFile(scriptPath);
                 TryDeleteFile(sentinelPath);
                 TryDeleteFile(sentinelPath + ".progress");

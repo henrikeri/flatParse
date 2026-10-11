@@ -53,6 +53,11 @@ public partial class MainViewModel
             .Where(vm => vm.IsSelected)
             .Select(vm => vm.DirectoryPath)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Include is an explicit processing choice, even for a directory
+        // automatically unchecked after detecting its existing output master.
+        selectedDirectories.UnionWith(MatchingGroups
+            .Where(group => group.IsIncluded)
+            .Select(group => group.DirectoryPath));
         var selectedJobsRaw = _flatJobs
             .Where(j => selectedDirectories.Contains(j.DirectoryPath))
             .ToList();
@@ -94,6 +99,13 @@ public partial class MainViewModel
         var cancellationToken = _cancellationTokenSource.Token;
 
         var selectedJobs = await BuildJobsWithGroupOverridesAsync(selectedJobsRaw, cancellationToken);
+
+        if (!DarksOnlyProcessMode && selectedJobs.Count == 0)
+        {
+            Log("[Process] No pending flat groups: existing output masters and preserved files were excluded.");
+            StatusMessage = "No new flat groups to process";
+            return;
+        }
 
         IsProcessing = true;
         IsCancellable = true;
@@ -155,8 +167,15 @@ public partial class MainViewModel
             Log("\nGenerating matching diagnostics...");
             var diagnostics = await _darkMatcher.GenerateMatchingDiagnosticsAsync(
                 plan.Jobs, plan.DarkCatalog, config.DarkMatching);
-            MatchingDiagnostics = new ObservableCollection<MatchingDiagnostic>(diagnostics);
-            await BuildMatchingGroupsAsync(plan.Jobs, plan.DarkCatalog, diagnostics, cancellationToken);
+            // Reports describe this run, while Matching Details retains the full
+            // scanned inventory, including untouched and already-completed groups.
+            SyncGroupOverrideSelectionsFromUi();
+            var inventoryJobs = await BuildJobsWithGroupOverridesAsync(_flatJobs, applyIncludeSelections: false, cancellationToken);
+            ResetCompletedInclusions(_flatJobs, plan, _groupIncludeSelections);
+            var inventoryDiagnostics = await _darkMatcher.GenerateMatchingDiagnosticsAsync(
+                inventoryJobs, plan.DarkCatalog, config.DarkMatching, cancellationToken: cancellationToken);
+            MatchingDiagnostics = new ObservableCollection<MatchingDiagnostic>(inventoryDiagnostics);
+            await BuildMatchingGroupsAsync(inventoryJobs, plan.DarkCatalog, inventoryDiagnostics, cancellationToken);
             Log($"Generated {diagnostics.Count} matching diagnostics");
 
             var outputConfig = new OutputPathConfiguration

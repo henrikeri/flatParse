@@ -24,7 +24,16 @@ namespace FlatMaster.WPF.ViewModels;
 public partial class DirectoryJobViewModel(DirectoryJob job) : ObservableObject
 {
     [ObservableProperty]
-    private bool _isSelected = true;
+    private bool _isSelected = job.IsSelected;
+
+    public bool HasExplicitSelection { get; private set; }
+    partial void OnIsSelectedChanged(bool value) => HasExplicitSelection = true;
+
+    public void SetSelection(bool value, bool isExplicit)
+    {
+        IsSelected = value;
+        HasExplicitSelection = isExplicit;
+    }
 
     [ObservableProperty]
     private bool _isExpanded;

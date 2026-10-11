@@ -30,6 +30,9 @@ public class PixInsightServiceTests
         script.Should().Contain("rejectLowSignalCalibratedFlats");
         script.Should().Contain("sampledImageMedian");
         script.Should().Contain("publishOutput(masterTemp, masterOut)");
+        script.Should().Contain("completionPath:");
+        script.Should().Contain("integratedFrameCount:files.length");
+        script.Should().Contain("integratedFrameCount:calFiles.length");
         script.Should().Contain("var biasMasterCache = {};");
         script.Should().Contain("P7 Bias(cached)");
         script.Should().Contain("Cannot replace cached master bias");

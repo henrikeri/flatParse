@@ -25,6 +25,12 @@ public sealed class ExposureGroup
     public ImageMetadata? RepresentativeMetadata { get; init; }
     public double? AverageTemperatureC { get; init; }
 
+    /// <summary>Existing output for this group, refreshed before matching and processing.</summary>
+    public string? ExistingMasterPath { get; set; }
+    public FlatOutputStatus OutputStatus { get; set; }
+    public string OutputStatusDetail { get; set; } = "No output master found";
+    public bool NeedsProcessing => OutputStatus != FlatOutputStatus.Completed;
+
     /// <summary>
     /// Desired characteristics for matching dark frames
     /// </summary>

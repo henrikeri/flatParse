@@ -18,6 +18,195 @@ namespace FlatMaster.Tests.Services;
 public class MasterDarkMaterializerTests
 {
     [Theory]
+    [InlineData(ImageType.MasterDark)]
+    [InlineData(ImageType.MasterDarkFlat)]
+    public async Task MaterializeMastersAsync_ImportsOnlyMatchedMastersOnce(ImageType masterType)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "FlatMasterTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var needed = CreateImportableMaster(root, "needed", 5, masterType);
+            var unused = CreateImportableMaster(root, "unused", 30, masterType);
+            var outputRoot = Path.Combine(root, "output");
+            var plan = CreateImportPlan(root, outputRoot, [needed, unused],
+                [CreateFlatGroup(5), CreateFlatGroup(5)]);
+
+            var imported = await CreateMaterializer().MaterializeMastersAsync(plan, [], true, null);
+
+            imported.Should().ContainSingle();
+            File.ReadAllText(imported.Single()).Should().Be("needed");
+            Directory.GetFiles(outputRoot, "*.xisf", SearchOption.AllDirectories)
+                .Should().Equal(imported);
+            plan.DarkCatalog.Should().HaveCount(3);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 3, 5)]
+    [InlineData(true, 2, 5)]
+    [InlineData(true, 3, 100)]
+    public async Task MaterializeMastersAsync_DoesNotImportWithoutAProcessingMatch(
+        bool jobSelected, int flatCount, double flatExposure)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "FlatMasterTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var master = CreateImportableMaster(root, "unused", 5, ImageType.MasterDark);
+            var outputRoot = Path.Combine(root, "output");
+            var plan = CreateImportPlan(root, outputRoot, [master],
+                [CreateFlatGroup(flatExposure, flatCount)]);
+            plan.Jobs.Single().IsSelected = jobSelected;
+
+            var imported = await CreateMaterializer().MaterializeMastersAsync(plan, [], true, null);
+
+            imported.Should().BeEmpty();
+            Directory.Exists(outputRoot).Should().BeFalse();
+            plan.DarkCatalog.Should().ContainSingle();
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task MaterializeMastersAsync_ImportsTheManualMatchInsteadOfTheAutomaticCandidate()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "FlatMasterTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var automatic = CreateImportableMaster(root, "automatic", 5, ImageType.MasterDark);
+            var manual = CreateImportableMaster(root, "manual", 30, ImageType.MasterDarkFlat);
+            var plan = CreateImportPlan(root, Path.Combine(root, "output"), [automatic, manual],
+                [CreateFlatGroup(5, manualPath: manual.FilePath)]);
+
+            var imported = await CreateMaterializer().MaterializeMastersAsync(plan, [], true, null);
+
+            imported.Should().ContainSingle();
+            File.ReadAllText(imported.Single()).Should().Be("manual");
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task MaterializeMastersAsync_ImportsMatchedMastersWhenRawDarksAlsoNeedIntegration()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "FlatMasterTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var needed = CreateImportableMaster(root, "needed", 5, ImageType.MasterDark);
+            var unused = CreateImportableMaster(root, "unused", 90, ImageType.MasterDark);
+            var rawFolder = Path.Combine(root, "DARKS_30s");
+            Directory.CreateDirectory(rawFolder);
+            var metadata = new Dictionary<string, ImageMetadata>();
+            var catalog = new List<DarkFrame> { needed, unused };
+            for (var i = 0; i < 3; i++)
+            {
+                var path = Path.Combine(rawFolder, $"dark_{i}.xisf");
+                await FitsImageIO.WriteXisfAsync(path, new FitsImageIO.ImageData
+                {
+                    Width = 2, Height = 2, Channels = 1,
+                    Pixels = [0.1, 0.1, 0.1, 0.1],
+                    Headers = new Dictionary<string, string>()
+                });
+                metadata[path] = new ImageMetadata
+                {
+                    FilePath = path, Type = ImageType.Dark, ExposureTime = 30, Binning = "1"
+                };
+                catalog.Add(new DarkFrame
+                {
+                    FilePath = path, Type = ImageType.Dark, ExposureTime = 30,
+                    Binning = "1", DarkGroupFolder = rawFolder
+                });
+            }
+            var reader = new Mock<IMetadataReaderService>();
+            reader.Setup(r => r.ReadMetadataBatchAsync(It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(metadata);
+            var materializer = new MasterDarkMaterializer(
+                new Mock<ILogger<MasterDarkMaterializer>>().Object, reader.Object,
+                new DarkMatchingService(new Mock<ILogger<DarkMatchingService>>().Object),
+                new Mock<IPixInsightService>().Object, new Mock<IImageProcessingEngine>().Object);
+            var plan = CreateImportPlan(root, Path.Combine(root, "output"), catalog,
+                [CreateFlatGroup(5), CreateFlatGroup(30)]);
+
+            var masters = await materializer.MaterializeMastersAsync(plan, [root], true, null);
+
+            masters.Should().HaveCount(2);
+            masters.Should().Contain(path => File.ReadAllText(path) == "needed");
+            plan.DarkCatalog.Count(d => d.Type == ImageType.MasterDark && d.ExposureTime == 30)
+                .Should().Be(1);
+            Directory.GetFiles(Path.Combine(root, "output"), "*.xisf", SearchOption.AllDirectories)
+                .Should().BeEquivalentTo(masters);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    private static MasterDarkMaterializer CreateMaterializer()
+        => new(
+            new Mock<ILogger<MasterDarkMaterializer>>().Object,
+            new Mock<IMetadataReaderService>().Object,
+            new DarkMatchingService(new Mock<ILogger<DarkMatchingService>>().Object),
+            new Mock<IPixInsightService>().Object,
+            new Mock<IImageProcessingEngine>().Object);
+
+    private static DarkFrame CreateImportableMaster(string root, string name, double exposure, ImageType type)
+    {
+        var directory = Path.Combine(root, name);
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "MasterDark.xisf");
+        File.WriteAllText(path, name);
+        File.WriteAllText(Path.Combine(directory, "MasterDark.meta.json"),
+            JsonSerializer.Serialize(new MasterDarkManifest
+            {
+                Key = name,
+                ExposureSeconds = exposure,
+                SourceFrames = []
+            }));
+        return new DarkFrame { FilePath = path, ExposureTime = exposure, Type = type, Binning = "1" };
+    }
+
+    private static ExposureGroup CreateFlatGroup(double exposure, int count = 3, string? manualPath = null)
+        => new()
+        {
+            ExposureTime = exposure,
+            FilePaths = Enumerable.Range(0, count).Select(i => $"flat_{i}.fit").ToList(),
+            MatchingCriteria = new MatchingCriteria { Binning = "1", ManualDarkPath = manualPath }
+        };
+
+    private static ProcessingPlan CreateImportPlan(
+        string root, string outputRoot, List<DarkFrame> catalog, List<ExposureGroup> groups)
+        => new()
+        {
+            Jobs =
+            [
+                new DirectoryJob
+                {
+                    DirectoryPath = root,
+                    BaseRootPath = root,
+                    OutputRootPath = outputRoot,
+                    RelativeDirectory = ".",
+                    ExposureGroups = groups
+                }
+            ],
+            DarkCatalog = catalog,
+            Configuration = new ProcessingConfiguration { PixInsightExecutable = "" }
+        };
+
+    [Theory]
     [InlineData(-10.9, -9.8, 1.0, true)]
     [InlineData(-11.0, -9.0, 1.0, true)]
     [InlineData(-11.1, -8.9, 1.0, false)]

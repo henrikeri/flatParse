@@ -14,15 +14,60 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System.Collections.ObjectModel;
+using System.Collections;
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using FlatMaster.Core.Models;
+using FlatMaster.Infrastructure.Services;
+using CommunityToolkit.Mvvm.Input;
 
 namespace FlatMaster.WPF.ViewModels;
 
 public partial class MainViewModel
 {
+    public string MatchingSummary => $"{MatchingGroups.Count:N0} groups · " +
+        $"{MatchingGroups.Count(g => g.OutputStatus == FlatOutputStatus.Completed):N0} completed · " +
+        $"{MatchingGroups.Count(g => g.IsIncluded):N0} included · " +
+        $"{MatchingGroups.Count(g => g.OutputStatus == FlatOutputStatus.ChangedInputs):N0} changed · " +
+        $"{MatchingGroups.Count(g => g.OutputStatus == FlatOutputStatus.Failed):N0} failed";
+
+    private bool _isUpdatingMatchingSelection;
+
+    private void OnMatchingGroupSelectionChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!_isUpdatingMatchingSelection && e.PropertyName == nameof(MatchingGroupViewModel.IsIncluded))
+            OnPropertyChanged(nameof(MatchingSummary));
+    }
+
+    [RelayCommand]
+    private void IncludePending()
+        => UpdateMatchingSelection(MatchingGroups.ToList(), group => group.NeedsProcessing && group.IsProcessable);
+
+    [RelayCommand]
+    private void ClearInclusion()
+        => UpdateMatchingSelection(MatchingGroups.ToList(), _ => false);
+
+    [RelayCommand]
+    private void IncludeSelectedRows(IList? selectedRows)
+        => UpdateMatchingSelection(selectedRows?.OfType<MatchingGroupViewModel>().ToList() ?? [], group => group.IsProcessable);
+
+    private void UpdateMatchingSelection(List<MatchingGroupViewModel> groups, Func<MatchingGroupViewModel, bool> include)
+    {
+        _isUpdatingMatchingSelection = true;
+        try
+        {
+            foreach (var group in groups)
+                group.SetIncludeSelection(include(group), isExplicit: true);
+        }
+        finally
+        {
+            _isUpdatingMatchingSelection = false;
+            OnPropertyChanged(nameof(MatchingSummary));
+        }
+    }
+
     private void SyncGroupOverrideSelectionsFromUi()
     {
         _groupOverrideSelections.Clear();
@@ -33,7 +78,25 @@ public partial class MainViewModel
             if (!string.IsNullOrWhiteSpace(path))
                 _groupOverrideSelections[group.GroupKey] = path;
 
-            _groupIncludeSelections[group.GroupKey] = group.IsIncluded;
+            if (group.HasExplicitIncludeSelection)
+                _groupIncludeSelections[group.GroupKey] = group.IsIncluded;
+        }
+    }
+
+    private static void ResetCompletedInclusions(
+        IEnumerable<DirectoryJob> inventoryJobs,
+        ProcessingPlan processedPlan,
+        IDictionary<string, bool> includeSelections)
+    {
+        var attemptedFiles = processedPlan.Jobs.SelectMany(job =>
+            job.ExposureGroups.SelectMany(group => group.FilePaths).Concat(job.PassthroughFiles))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var job in inventoryJobs)
+        foreach (var group in job.ExposureGroups)
+        {
+            if (group.OutputStatus == FlatOutputStatus.Completed && group.Count > 0 &&
+                group.FilePaths.All(attemptedFiles.Contains))
+                includeSelections.Remove(BuildGroupKey(job, group));
         }
     }
 
@@ -41,14 +104,18 @@ public partial class MainViewModel
     {
         var overrides = new Dictionary<string, string?>(_groupOverrideSelections, StringComparer.OrdinalIgnoreCase);
         var includes = new Dictionary<string, bool>(_groupIncludeSelections, StringComparer.OrdinalIgnoreCase);
-        return BuildJobsWithGroupOverrides(jobs, overrides, includes, applyIncludeSelections);
+        var snapshot = jobs.ToList();
+        var outputRoot = ResolveEffectiveOutputRoot();
+        ExistingFlatOutputService.Refresh(snapshot, outputRoot);
+        return BuildJobsWithGroupOverrides(snapshot, overrides, includes, applyIncludeSelections, outputRoot);
     }
 
     private static List<DirectoryJob> BuildJobsWithGroupOverrides(
         IEnumerable<DirectoryJob> jobs,
         IReadOnlyDictionary<string, string?> overrideSelections,
         IReadOnlyDictionary<string, bool> includeSelections,
-        bool applyIncludeSelections)
+        bool applyIncludeSelections,
+        string outputRoot)
     {
         var result = new List<DirectoryJob>();
         foreach (var job in jobs)
@@ -61,6 +128,7 @@ public partial class MainViewModel
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var mappedPassthroughFiles = job.PassthroughFiles
                 .Where(path => !groupedPassthroughPaths.Contains(path))
+                .Where(path => !applyIncludeSelections || !ExistingFlatOutputService.IsPreserved(job, outputRoot, path))
                 .ToList();
 
             foreach (var group in job.ExposureGroups)
@@ -68,7 +136,7 @@ public partial class MainViewModel
                 var key = BuildGroupKey(job, group);
                 var include = includeSelections.TryGetValue(key, out var selectedByUser)
                     ? selectedByUser
-                    : group.FilePaths.Count != 2;
+                    : job.IsSelected && group.NeedsProcessing && group.FilePaths.Count != 2;
                 if (applyIncludeSelections && !include)
                     continue;
 
@@ -93,6 +161,9 @@ public partial class MainViewModel
                     FilePaths = [.. group.FilePaths],
                     RepresentativeMetadata = group.RepresentativeMetadata,
                     AverageTemperatureC = group.AverageTemperatureC,
+                    ExistingMasterPath = group.ExistingMasterPath,
+                    OutputStatus = group.OutputStatus,
+                    OutputStatusDetail = group.OutputStatusDetail,
                     MatchingCriteria = criteria
                 });
             }
@@ -110,7 +181,7 @@ public partial class MainViewModel
                 PassthroughFiles = mappedPassthroughFiles
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList(),
-                IsSelected = job.IsSelected
+                IsSelected = applyIncludeSelections || job.IsSelected
             });
         }
 
@@ -125,8 +196,13 @@ public partial class MainViewModel
         var jobSnapshot = jobs.ToList();
         var overrideSelections = new Dictionary<string, string?>(_groupOverrideSelections, StringComparer.OrdinalIgnoreCase);
         var includeSelections = new Dictionary<string, bool>(_groupIncludeSelections, StringComparer.OrdinalIgnoreCase);
+        var outputRoot = ResolveEffectiveOutputRoot();
         return await Task.Run(
-            () => BuildJobsWithGroupOverrides(jobSnapshot, overrideSelections, includeSelections, applyIncludeSelections),
+            () =>
+            {
+                ExistingFlatOutputService.Refresh(jobSnapshot, outputRoot, cancellationToken);
+                return BuildJobsWithGroupOverrides(jobSnapshot, overrideSelections, includeSelections, applyIncludeSelections, outputRoot);
+            },
             cancellationToken);
     }
 
@@ -271,7 +347,10 @@ public partial class MainViewModel
                 else if (!hasMinimumFrames)
                     selectionReason = "[<3 flats] " + selectionReason;
 
-                groups.Add(new MatchingGroupViewModel
+                if (group.ExistingMasterPath != null)
+                    selectionReason = group.OutputStatusDetail;
+
+                var groupViewModel = new MatchingGroupViewModel
                 {
                     GroupKey = key,
                     DirectoryPath = job.DirectoryPath,
@@ -284,6 +363,9 @@ public partial class MainViewModel
                     HasMinimumFrames = hasMinimumFrames,
                     IsPreservationOnly = isPreservationOnly,
                     IsProcessable = hasMinimumFrames || isPreservationOnly,
+                    OutputStatus = group.OutputStatus,
+                    OutputStatusDetail = group.OutputStatusDetail,
+                    ExistingMasterPath = group.ExistingMasterPath,
                     SelectedDarkDisplay = selectedDarkDisplay,
                     SelectionReason = selectionReason,
                     TemperatureDeltaSortValue = groupDeltaC ?? double.PositiveInfinity,
@@ -293,16 +375,20 @@ public partial class MainViewModel
                     FlatFiles = new ObservableCollection<string>(
                         group.FilePaths.OrderBy(p => p, StringComparer.OrdinalIgnoreCase)),
                     OverrideOptions = overrideOptions,
-                    IsIncluded = groupIncludeSelections.TryGetValue(key, out var savedIncludeSelection)
-                        ? savedIncludeSelection
-                        : hasMinimumFrames || group.FilePaths.Count == 1,
                     SelectedOverride = selectedOverride
-                });
+                };
+                var hasExplicitSelection = groupIncludeSelections.TryGetValue(key, out var savedIncludeSelection);
+                groupViewModel.SetIncludeSelection(
+                    hasExplicitSelection ? savedIncludeSelection :
+                        job.IsSelected && group.NeedsProcessing && (hasMinimumFrames || group.FilePaths.Count == 1),
+                    hasExplicitSelection);
+                groups.Add(groupViewModel);
             }
         }
 
         return groups
-            .OrderBy(g => g.DirectoryPath, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.IsIncluded)
+            .ThenBy(g => g.DirectoryPath, StringComparer.OrdinalIgnoreCase)
             .ThenBy(g => g.ExposureTime)
             .ToList();
     }

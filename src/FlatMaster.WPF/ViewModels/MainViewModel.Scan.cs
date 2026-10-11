@@ -21,6 +21,7 @@ using System.Linq;
 using CommunityToolkit.Mvvm.Input;
 using FlatMaster.Core.Interfaces;
 using FlatMaster.Core.Models;
+using FlatMaster.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using WpfMessageBox = System.Windows.MessageBox;
@@ -422,9 +423,24 @@ public partial class MainViewModel
 
         _flatJobs = await _fileScanner.ScanFlatDirectoriesAsync(FlatBaseRoots, progress, cancellationToken);
 
+        var outputRoot = ResolveEffectiveOutputRoot();
+        await Task.Run(() => ExistingFlatOutputService.Refresh(_flatJobs, outputRoot, cancellationToken), cancellationToken);
+        foreach (var job in _flatJobs)
+            job.IsSelected = ExistingFlatOutputService.HasPendingWork(job, outputRoot);
+
         foreach (var job in _flatJobs)
             FlatDirectories.Add(new DirectoryJobViewModel(job));
         RegisterFlatDirectorySelectionTracking();
+        var completedDirectories = _flatJobs.Where(job => !job.IsSelected)
+            .Select(job => job.DirectoryPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var vm in FlatDirectories)
+        {
+            if (completedDirectories.Contains(vm.DirectoryPath))
+                vm.SetSelection(false, isExplicit: vm.HasExplicitSelection);
+        }
+        RefreshCachedFlatSelections();
+
+        Log($"[Scan] Found {_flatJobs.Sum(j => j.ExposureGroups.Count(g => g.OutputStatus == FlatOutputStatus.Completed))} completed groups; these default to unchecked.");
 
         Log($"Flat scan complete: {_flatJobs.Count} directories with processable or preserved image content");
         var totalFlats = _flatJobs.Sum(job => job.ExposureGroups.Sum(g => g.FilePaths.Count));
@@ -647,11 +663,11 @@ public partial class MainViewModel
                 .Where(vm => vm.IsSelected)
                 .Select(vm => vm.DirectoryPath)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var selectedJobsRaw = _flatJobs
-                .Where(j => selectedDirectories.Contains(j.DirectoryPath))
-                .ToList();
-            // Keep all rows visible in Matching Details; "Include" is for processing selection.
-            var selectedJobs = await BuildJobsWithGroupOverridesAsync(selectedJobsRaw, applyIncludeSelections: false);
+            // Match the full inventory, including directories unchecked because
+            // their output masters already exist. Selection only controls Include.
+            var selectedJobs = await BuildJobsWithGroupOverridesAsync(_flatJobs, applyIncludeSelections: false);
+            foreach (var job in selectedJobs)
+                job.IsSelected = selectedDirectories.Contains(job.DirectoryPath);
 
             var selectedDarks = GetSelectedDarks();
             var darkMatchingOptions = _configuration.GetSection("DarkMatching").Get<DarkMatchingOptions>()

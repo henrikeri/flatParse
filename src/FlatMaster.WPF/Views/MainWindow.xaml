@@ -1,6 +1,7 @@
 <Window x:Class="FlatMaster.WPF.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:componentModel="clr-namespace:System.ComponentModel;assembly=WindowsBase"
         Title="FlatMaster - Astronomical Flat Calibration Orchestrator"
         Height="900" Width="1600" MinHeight="700" MinWidth="1200"
         WindowStartupLocation="CenterScreen" WindowState="Maximized"
@@ -12,6 +13,15 @@
         TextOptions.TextFormattingMode="Display">
     
     <Window.Resources>
+        <CollectionViewSource x:Key="SortedMatchingGroups"
+                              Source="{Binding MatchingGroups}"
+                              IsLiveSortingRequested="True">
+            <CollectionViewSource.SortDescriptions>
+                <componentModel:SortDescription PropertyName="IsIncluded" Direction="Descending"/>
+                <componentModel:SortDescription PropertyName="DirectoryPath" Direction="Ascending"/>
+                <componentModel:SortDescription PropertyName="ExposureTime" Direction="Ascending"/>
+            </CollectionViewSource.SortDescriptions>
+        </CollectionViewSource>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
     </Window.Resources>
@@ -633,10 +643,18 @@
                                             IsEnabled="{Binding IsGeneratingMatching, Converter={StaticResource InverseBoolConverter}}"
                                             DockPanel.Dock="Right" Style="{StaticResource AccentButtonStyle}" 
                                             Height="36" Padding="16,6" FontSize="13"/>
-                                    <TextBlock Text="Match selected flat groups against selected darks. Use Override to force a specific master/loose-dark candidate." 
+                                    <TextBlock Text="Match all scanned flat groups against selected darks. Completed groups default to unchecked; use Include to reprocess."
                                                FontSize="12" Foreground="{StaticResource SecondaryTextBrush}"
                                                TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,16,0"/>
                                 </DockPanel>
+
+                                <TextBlock Text="{Binding MatchingSummary}" Margin="0,12,0,8" FontWeight="SemiBold"/>
+                                <WrapPanel>
+                                    <Button Content="Include pending" Command="{Binding IncludePendingCommand}" Margin="0,0,8,0" Padding="12,6"/>
+                                    <Button Content="Clear inclusion" Command="{Binding ClearInclusionCommand}" Margin="0,0,8,0" Padding="12,6"/>
+                                    <Button Content="Include selected rows" Command="{Binding IncludeSelectedRowsCommand}"
+                                            CommandParameter="{Binding SelectedItems, ElementName=MatchingGrid}" Padding="12,6"/>
+                                </WrapPanel>
 
                                 <StackPanel Margin="0,10,0,0"
                                             Visibility="{Binding IsGeneratingMatching, Converter={StaticResource BoolToVisibilityConverter}}">
@@ -665,7 +683,8 @@
                         <Grid Grid.Row="1" Margin="24">
                             <Border BorderThickness="1" BorderBrush="{StaticResource BorderBrush}"
                                     Background="{StaticResource PanelBackgroundBrush}">
-                                <DataGrid ItemsSource="{Binding MatchingGroups}"
+                                <DataGrid x:Name="MatchingGrid" ItemsSource="{Binding Source={StaticResource SortedMatchingGroups}}"
+                                          SelectionMode="Extended" SelectionUnit="FullRow"
                                           AutoGenerateColumns="False"
                                           CanUserAddRows="False"
                                           CanUserDeleteRows="False"
@@ -874,6 +893,22 @@
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
+                                        <DataGridTextColumn Header="Output status" Binding="{Binding OutputStatusDisplay}"
+                                                            SortMemberPath="OutputStatusDisplay" Width="130" IsReadOnly="True">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="{x:Type TextBlock}" BasedOn="{StaticResource MatchingTextLeftStyle}">
+                                                    <Setter Property="ToolTip" Value="{Binding OutputStatusDetail}"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+                                        <DataGridTemplateColumn Header="Existing master" Width="115" CanUserSort="False">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Button Content="Open master" Command="{Binding OpenMasterCommand}"
+                                                            ToolTip="{Binding ExistingMasterPath}" Padding="8,2"/>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
                                         <DataGridTextColumn Header="Exposure (seconds)"
                                                             Binding="{Binding ExposureTime, StringFormat=F3}"
                                                             SortMemberPath="ExposureTime"

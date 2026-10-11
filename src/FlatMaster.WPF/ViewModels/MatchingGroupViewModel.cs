@@ -14,7 +14,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
+using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using FlatMaster.Core.Models;
 
 namespace FlatMaster.WPF.ViewModels;
 
@@ -37,12 +42,39 @@ public partial class MatchingGroupViewModel : ObservableObject
     public required string ConfidenceDisplay { get; init; }
     public required ObservableCollection<string> FlatFiles { get; init; }
     public required ObservableCollection<DarkOverrideOptionViewModel> OverrideOptions { get; init; }
+    public FlatOutputStatus OutputStatus { get; init; }
+    public string OutputStatusDetail { get; init; } = "No output master found";
+    public string? ExistingMasterPath { get; init; }
+    public string OutputStatusDisplay => OutputStatus == FlatOutputStatus.ChangedInputs ? "Changed inputs" : OutputStatus.ToString();
+    public bool NeedsProcessing => OutputStatus != FlatOutputStatus.Completed;
+    public bool CanOpenMaster => !string.IsNullOrWhiteSpace(ExistingMasterPath) && File.Exists(ExistingMasterPath);
+
+    [RelayCommand(CanExecute = nameof(CanOpenMaster))]
+    private void OpenMaster()
+    {
+        try { Process.Start(new ProcessStartInfo(ExistingMasterPath!) { UseShellExecute = true }); }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not open {ExistingMasterPath}:\n{ex.Message}", "Open master", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
 
     [ObservableProperty]
     private bool _isExpanded;
 
     [ObservableProperty]
     private bool _isIncluded = true;
+
+    public bool HasExplicitIncludeSelection { get; private set; }
+
+    partial void OnIsIncludedChanged(bool value)
+        => HasExplicitIncludeSelection = true;
+
+    public void SetIncludeSelection(bool value, bool isExplicit)
+    {
+        IsIncluded = value;
+        HasExplicitIncludeSelection = isExplicit;
+    }
 
     [ObservableProperty]
     private DarkOverrideOptionViewModel? _selectedOverride;
