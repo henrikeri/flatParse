@@ -24,6 +24,18 @@ public sealed class ExposureGroup
     public required List<string> FilePaths { get; init; } = [];
     public ImageMetadata? RepresentativeMetadata { get; init; }
     public double? AverageTemperatureC { get; init; }
+    /// <summary>Original exposure groups calibrated separately before joint integration.</summary>
+    public List<ExposureGroup> CalibrationGroups { get; init; } = [];
+    public bool IsCombined => CalibrationGroups.Count > 0;
+    public IEnumerable<ExposureGroup> CalibrationUnits => IsCombined ? CalibrationGroups : [this];
+    public string ExposureDisplay => IsCombined
+        ? string.Join(" + ", CalibrationGroups.Select(g => g.ExposureTime).Distinct().OrderBy(x => x)
+            .Select(x => x.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture))) + " s (combined)"
+        : ExposureTime.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + " s";
+    public string OutputExposureTag => IsCombined
+        ? "Mixed" + string.Join("-", CalibrationGroups.Select(g => g.ExposureTime).Distinct().OrderBy(x => x)
+            .Select(x => x.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)))
+        : ExposureTime.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>Existing output for this group, refreshed before matching and processing.</summary>
     public string? ExistingMasterPath { get; set; }

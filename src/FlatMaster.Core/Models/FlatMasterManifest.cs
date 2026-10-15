@@ -15,6 +15,7 @@ public sealed class FlatMasterManifest
     public string? Error { get; set; }
     public DateTime RecordedUtc { get; set; } = DateTime.UtcNow;
     public double ExposureSeconds { get; init; }
+    public List<double> CalibrationExposures { get; init; } = [];
     public string? Filter { get; init; }
     public string? Binning { get; init; }
     public double? Gain { get; init; }

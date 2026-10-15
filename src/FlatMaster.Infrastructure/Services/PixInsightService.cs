@@ -53,6 +53,20 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                 groups = j.ExposureGroups.Select(g => new
                 {
                     exposure = g.ExposureTime,
+                    outputTag = g.OutputExposureTag,
+                    calibrationGroups = g.IsCombined ? g.CalibrationGroups.Select(c => new
+                    {
+                        exposure = c.ExposureTime,
+                        files = c.FilePaths.Select(NormalizePath).ToArray(),
+                        want = new
+                        {
+                            binning = c.MatchingCriteria?.Binning, gain = c.MatchingCriteria?.Gain,
+                            offset = c.MatchingCriteria?.Offset, temp = c.MatchingCriteria?.Temperature,
+                            width = c.MatchingCriteria?.Width, height = c.MatchingCriteria?.Height,
+                            channels = c.MatchingCriteria?.Channels,
+                            manualDarkPath = string.IsNullOrWhiteSpace(c.MatchingCriteria?.ManualDarkPath) ? null : NormalizePath(c.MatchingCriteria.ManualDarkPath)
+                        }
+                    }).ToArray() : null,
                     files = g.FilePaths.Select(NormalizePath).ToArray(),
                     completionPath = NormalizePath(FlatOutputProvenance.ReceiptPath(sentinelPath, j, g)),
                     want = new
@@ -337,6 +351,7 @@ public sealed partial class PixInsightService(ILogger<PixInsightService> logger)
                 eligibleGroups.Add(new ExposureGroup
                 {
                     ExposureTime = group.ExposureTime,
+                    CalibrationGroups = group.CalibrationGroups,
                     FilePaths = [.. group.FilePaths],
                     RepresentativeMetadata = group.RepresentativeMetadata,
                     AverageTemperatureC = group.AverageTemperatureC,

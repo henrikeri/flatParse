@@ -158,6 +158,7 @@ public partial class MainViewModel
                 mappedGroups.Add(new ExposureGroup
                 {
                     ExposureTime = group.ExposureTime,
+                    CalibrationGroups = group.CalibrationGroups,
                     FilePaths = [.. group.FilePaths],
                     RepresentativeMetadata = group.RepresentativeMetadata,
                     AverageTemperatureC = group.AverageTemperatureC,
@@ -287,7 +288,9 @@ public partial class MainViewModel
                             DarkPath = null
                         }
                     ])
-                    : new ObservableCollection<DarkOverrideOptionViewModel>(BuildOverrideOptions(group, selectedDarks));
+                    : group.IsCombined
+                        ? new ObservableCollection<DarkOverrideOptionViewModel>([new DarkOverrideOptionViewModel { DisplayName = "Auto (separate dark per exposure)", DarkPath = null }])
+                        : new ObservableCollection<DarkOverrideOptionViewModel>(BuildOverrideOptions(group, selectedDarks));
                 groupOverrideSelections.TryGetValue(key, out var selectedOverridePath);
                 var selectedOverride = overrideOptions.FirstOrDefault(o =>
                     string.Equals(o.DarkPath, selectedOverridePath, StringComparison.OrdinalIgnoreCase)) ?? overrideOptions.FirstOrDefault();
@@ -334,6 +337,11 @@ public partial class MainViewModel
                 var confidence = groupDiagnostics.Average(d => d.ConfidenceScore);
                 var hasMinimumFrames = group.FilePaths.Count >= 3;
                 var selectionReason = reasons.Count == 1 ? reasons[0] : $"Mixed ({reasons.Count})";
+                if (group.IsCombined)
+                    selectionReason = string.Join("; ", group.CalibrationGroups.Select(unit =>
+                        unit.ExposureTime.ToString("0.###", CultureInfo.InvariantCulture) + "s: " +
+                        string.Join(", ", groupDiagnostics.Where(d => unit.FilePaths.Contains(d.FlatPath, StringComparer.OrdinalIgnoreCase))
+                            .Select(d => d.SelectionReason).Distinct(StringComparer.OrdinalIgnoreCase))));
                 if (isPreservationOnly)
                 {
                     selectedDarkDisplay = "Not required";
@@ -355,6 +363,7 @@ public partial class MainViewModel
                     GroupKey = key,
                     DirectoryPath = job.DirectoryPath,
                     ExposureTime = group.ExposureTime,
+                    CombinedExposureDisplay = group.IsCombined ? group.ExposureDisplay : null,
                     FlatAverageTemperatureSortValue = groupAverageTempC ?? double.PositiveInfinity,
                     FlatAverageTemperatureDisplay = group.AverageTemperatureC.HasValue
                         ? FormatTempC(group.AverageTemperatureC.Value)
@@ -502,7 +511,7 @@ public partial class MainViewModel
             CultureInfo.InvariantCulture,
             "{0}|{1}|{2}",
             Path.GetFullPath(job.DirectoryPath),
-            group.ExposureTime.ToString("R", CultureInfo.InvariantCulture),
+            group.IsCombined ? group.OutputExposureTag : group.ExposureTime.ToString("R", CultureInfo.InvariantCulture),
             firstFile);
     }
 

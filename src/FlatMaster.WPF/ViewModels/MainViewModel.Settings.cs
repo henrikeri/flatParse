@@ -74,6 +74,8 @@ public partial class MainViewModel
                     DeleteCalibrated = settings.DeleteCalibrated.Value;
                 if (settings.RequireDarks.HasValue)
                     RequireDarks = settings.RequireDarks.Value;
+                if (settings.CombineFlatExposures.HasValue)
+                    CombineFlatExposures = settings.CombineFlatExposures.Value;
                 if (settings.DarksOnlyProcessMode.HasValue)
                     DarksOnlyProcessMode = settings.DarksOnlyProcessMode.Value;
                 if (settings.UseReplicatedOutput.HasValue)
@@ -120,6 +122,7 @@ public partial class MainViewModel
             or nameof(UseNativeProcessing)
             or nameof(DeleteCalibrated)
             or nameof(RequireDarks)
+            or nameof(CombineFlatExposures)
             or nameof(DarksOnlyProcessMode)
             or nameof(UseReplicatedOutput)
             or nameof(CopyOnlyProcessed)
@@ -180,6 +183,7 @@ public partial class MainViewModel
             UseNativeProcessing = UseNativeProcessing,
             DeleteCalibrated = DeleteCalibrated,
             RequireDarks = RequireDarks,
+            CombineFlatExposures = CombineFlatExposures,
             DarksOnlyProcessMode = DarksOnlyProcessMode,
             UseReplicatedOutput = UseReplicatedOutput,
             CopyOnlyProcessed = CopyOnlyProcessed,
@@ -395,6 +399,7 @@ public partial class MainViewModel
         public bool? UseNativeProcessing { get; init; }
         public bool? DeleteCalibrated { get; init; }
         public bool? RequireDarks { get; init; }
+        public bool? CombineFlatExposures { get; init; }
         public bool? DarksOnlyProcessMode { get; init; }
         public bool? UseReplicatedOutput { get; init; }
         public bool? CopyOnlyProcessed { get; init; }

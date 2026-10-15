@@ -422,6 +422,11 @@ public partial class MainViewModel
         });
 
         _flatJobs = await _fileScanner.ScanFlatDirectoriesAsync(FlatBaseRoots, progress, cancellationToken);
+        if (CombineFlatExposures)
+        {
+            _flatJobs = _flatJobs.Select(CombinedFlatGrouping.Combine).ToList();
+            Log($"[Scan] Combining compatible exposures: {_flatJobs.Sum(j => j.ExposureGroups.Count(g => g.IsCombined))} combined groups; dark calibration remains separate per exposure.");
+        }
 
         var outputRoot = ResolveEffectiveOutputRoot();
         await Task.Run(() => ExistingFlatOutputService.Refresh(_flatJobs, outputRoot, cancellationToken), cancellationToken);

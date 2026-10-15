@@ -19,7 +19,7 @@ public static class ExistingFlatOutputService
                 ? Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
                     .Where(path => new FileInfo(path).Length > 0)
                     .Select(path => (Path: path, Match: Regex.Match(Path.GetFileName(path),
-                        @"^MasterFlat_(?:20\d{2}-\d{2}-\d{2}|UNKNOWNDATE)_(.+?)(?:_Bin([^_]+))?_([0-9]+(?:\.[0-9]+)?)s\.(?:xisf|fit|fits)$",
+                        @"^MasterFlat_(?:20\d{2}-\d{2}-\d{2}|UNKNOWNDATE)_(.+?)(?:_Bin([^_]+))?_((?:Mixed)?[0-9]+(?:\.[0-9]+)?(?:-[0-9]+(?:\.[0-9]+)?)*)s\.(?:xisf|fit|fits)$",
                         RegexOptions.IgnoreCase)))
                     .Where(item => item.Match.Success).ToList()
                 : [];
@@ -51,9 +51,11 @@ public static class ExistingFlatOutputService
                 foreach (var master in masters)
                 {
                     var match = master.Match;
-                    if (!double.TryParse(match.Groups[3].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var exposure) ||
-                        Math.Abs(exposure - group.ExposureTime) > 0.0005 ||
-                        !filters.Contains(match.Groups[1].Value))
+                    var exposureMatches = group.IsCombined
+                        ? string.Equals(match.Groups[3].Value, group.OutputExposureTag, StringComparison.OrdinalIgnoreCase)
+                        : double.TryParse(match.Groups[3].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var exposure) &&
+                          Math.Abs(exposure - group.ExposureTime) <= 0.0005;
+                    if (!exposureMatches || !filters.Contains(match.Groups[1].Value))
                         continue;
                     var binning = group.MatchingCriteria?.Binning ?? "1";
                     if (match.Groups[2].Success && !string.Equals(match.Groups[2].Value, binning, StringComparison.OrdinalIgnoreCase))

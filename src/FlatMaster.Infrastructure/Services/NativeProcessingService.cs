@@ -85,32 +85,27 @@ public sealed partial class NativeProcessingService(
                         group.ExposureTime,
                         group.FilePaths.Count));
 
-                    var darkMatch = _darkMatcher.FindBestDark(
-                        group, plan.DarkCatalog, plan.Configuration.DarkMatching);
-
-                    if (darkMatch == null)
+                    var calibrations = new List<(ExposureGroup Group, DarkMatchResult? Match)>();
+                    foreach (var unit in group.CalibrationUnits)
                     {
-                        if (plan.Configuration.RequireDarks)
+                        var darkMatch = _darkMatcher.FindBestDark(unit, plan.DarkCatalog, plan.Configuration.DarkMatching);
+                        if (darkMatch == null && plan.Configuration.RequireDarks)
+                            throw new InvalidOperationException($"No suitable dark/bias for required calibration at {unit.ExposureTime:0.###}s");
+                        if (darkMatch == null)
                         {
-                            FlatOutputProvenance.Fail(attempt, "No suitable dark/bias for required calibration");
-                            progress.Report(string.Format(CultureInfo.InvariantCulture, "  ! No dark/bias for {0:F3}s - skipped", group.ExposureTime));
-                            failureCount++;
-                            failureFileCount += group.FilePaths.Count;
-                            failedDirectories.Add(job.DirectoryPath);
-                            continue;
+                            progress.Report($"  ! No dark/bias for {unit.ExposureTime:0.###}s - integrating flats without subtraction");
                         }
-
-                        progress.Report(string.Format(CultureInfo.InvariantCulture, "  ! No dark/bias for {0:F3}s - integrating flats without subtraction", group.ExposureTime));
-                    }
-                    else
-                    {
-                        progress.Report($"  Dark selected: {Path.GetFileName(darkMatch.FilePath)} [{darkMatch.MatchKind}]");
-                        progress.Report($"  Dark source: {darkMatch.FilePath}");
-                        progress.Report($"  Dark optimize required: {(darkMatch.OptimizeRequired ? "yes" : "no")}");
+                        else
+                        {
+                            progress.Report($"  {unit.ExposureTime:0.###}s dark selected: {Path.GetFileName(darkMatch.FilePath)} [{darkMatch.MatchKind}]");
+                            progress.Report($"  Dark source: {darkMatch.FilePath}");
+                            progress.Report($"  Dark optimize required: {(darkMatch.OptimizeRequired ? "yes" : "no")}");
+                        }
+                        calibrations.Add((unit, darkMatch));
                     }
 
                     await ProcessGroupAsync(
-                        io, group, darkMatch, job, plan.Configuration,
+                        io, group, calibrations, job, plan.Configuration,
                         attempt, progress, cancellationToken);
 
                     successCount++;
@@ -156,7 +151,7 @@ public sealed partial class NativeProcessingService(
     private static async Task ProcessGroupAsync(
         FitsImageIO io,
         ExposureGroup group,
-        DarkMatchResult? darkMatch,
+        IReadOnlyList<(ExposureGroup Group, DarkMatchResult? Match)> calibrations,
         DirectoryJob job,
         ProcessingConfiguration config,
         FlatMasterManifest attempt,
@@ -172,24 +167,26 @@ public sealed partial class NativeProcessingService(
         progress.Report($"  Native prepare stage: parallel workers={frameWorkers}");
 
         // 1. Load dark/bias frame when available.
-        FitsImageIO.ImageData? darkImage = null;
-        if (darkMatch != null)
+        var darkByPath = new Dictionary<string, FitsImageIO.ImageData?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (unit, darkMatch) in calibrations)
         {
-            progress.Report("  Reading selected dark/bias frame...");
-            darkImage = await io.ReadAsync(darkMatch.FilePath, ct);
-            progress.Report($"  Dark loaded: {darkImage.Width}x{darkImage.Height}");
-
-            if (darkMatch.OptimizeRequired)
+            FitsImageIO.ImageData? darkImage = null;
+            if (darkMatch != null)
             {
-                // Scale the dark by the exposure ratio  (flatExp / darkExp)
-                double darkExp = ParseExposure(darkImage.Headers);
-                if (darkExp > 0 && group.ExposureTime > 0)
+                progress.Report($"  Reading selected dark/bias for {unit.ExposureTime:0.###}s...");
+                darkImage = await io.ReadAsync(darkMatch.FilePath, ct);
+                if (darkMatch.OptimizeRequired)
                 {
-                    double scale = group.ExposureTime / darkExp;
-                    progress.Report(string.Format(CultureInfo.InvariantCulture, "  Optimizing dark: scale x{0:F4} ({1:F3}s -> {2:F3}s)", scale, darkExp, group.ExposureTime));
-                    ScalePixels(darkImage.Pixels, scale);
+                    double darkExp = ParseExposure(darkImage.Headers);
+                    if (darkExp > 0 && unit.ExposureTime > 0)
+                    {
+                        double scale = unit.ExposureTime / darkExp;
+                        progress.Report($"  Optimizing dark: scale x{scale:F4} ({darkExp:F3}s -> {unit.ExposureTime:F3}s)");
+                        ScalePixels(darkImage.Pixels, scale);
+                    }
                 }
             }
+            foreach (var path in unit.FilePaths) darkByPath.Add(path, darkImage);
         }
 
         // 2. Load and calibrate each flat (subtract dark/bias when available)
@@ -204,6 +201,7 @@ public sealed partial class NativeProcessingService(
         await Parallel.ForEachAsync(Enumerable.Range(0, n), calibrationOptions, async (i, pct) =>
         {
             var flat = await io.ReadAsync(flatPaths[i], pct);
+            var darkImage = darkByPath[flatPaths[i]];
             if (darkImage != null)
             {
                 ValidateDimensions(flat, darkImage, flatPaths[i]);
@@ -355,13 +353,22 @@ public sealed partial class NativeProcessingService(
             Headers = new Dictionary<string, string>(calibrated[0].Headers, StringComparer.OrdinalIgnoreCase)
         };
         master.Headers["IMAGETYP"] = "Master Flat";
+        if (group.IsCombined)
+        {
+            master.Headers.Remove("EXPTIME");
+            master.Headers.Remove("EXPOSURE");
+            master.Headers.Remove("EXPOSURETIME");
+            master.Headers.Remove("X_EXPOSURE");
+            master.Headers["FMEXPS"] = string.Join(",", group.CalibrationGroups.Select(g => g.ExposureTime.ToString("0.###", CultureInfo.InvariantCulture)));
+        }
 
         // 7. Determine output path
         var filter = group.RepresentativeMetadata?.Filter ?? GuessFilter(flatPaths, job.DirectoryPath);
         var binning = group.MatchingCriteria?.Binning ?? "1";
         var date = GuessDate(job.DirectoryPath);
         var outputExt = NormalizeOutputExtension(config.OutputFileExtension);
-        var masterName = string.Format(CultureInfo.InvariantCulture, "MasterFlat_{0}_{1}_Bin{2}_{3:F3}s.{4}", date, filter, binning, group.ExposureTime, outputExt);
+        var exposureTag = group.IsCombined ? group.OutputExposureTag : group.ExposureTime.ToString("F3", CultureInfo.InvariantCulture);
+        var masterName = $"MasterFlat_{date}_{filter}_Bin{binning}_{exposureTag}s.{outputExt}";
 
         var outDir = job.OutputRootPath;
         if (!string.IsNullOrEmpty(job.RelativeDirectory) && job.RelativeDirectory != ".")

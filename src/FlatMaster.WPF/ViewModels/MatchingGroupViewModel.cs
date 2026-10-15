@@ -28,6 +28,8 @@ public partial class MatchingGroupViewModel : ObservableObject
     public required string GroupKey { get; init; }
     public required string DirectoryPath { get; init; }
     public required double ExposureTime { get; init; }
+    public string? CombinedExposureDisplay { get; init; }
+    public string ExposureDisplay => CombinedExposureDisplay ?? ExposureTime.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
     public required double FlatAverageTemperatureSortValue { get; init; }
     public required string FlatAverageTemperatureDisplay { get; init; }
     public required int FileCount { get; init; }

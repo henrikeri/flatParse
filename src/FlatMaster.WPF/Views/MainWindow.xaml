@@ -262,6 +262,9 @@
                                               IsEnabled="{Binding IsNotDarksOnlyMode}"
                                               Foreground="{StaticResource PrimaryTextBrush}" Margin="0,0,0,8"/>
 
+                                    <CheckBox Content="Combine compatible flat exposures after separate calibration"
+                                              IsChecked="{Binding CombineFlatExposures}" IsEnabled="{Binding CanChangeFlatGrouping}"
+                                              Margin="0,4,0,8" ToolTip="Within each folder, calibrate each exposure with its own dark, then normalise and integrate together. Filter, camera settings and geometry must match. Changing this option requires a new flat scan."/>
                                     <TextBlock Text="Dark vs bias selection:"
                                                Foreground="{StaticResource PrimaryTextBrush}"
                                                FontWeight="SemiBold"
@@ -910,12 +913,14 @@
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
                                         <DataGridTextColumn Header="Exposure (seconds)"
-                                                            Binding="{Binding ExposureTime, StringFormat=F3}"
+                                                            Binding="{Binding ExposureDisplay}"
                                                             SortMemberPath="ExposureTime"
-                                                            Width="130"
+                                                            Width="170"
                                                             IsReadOnly="True">
                                             <DataGridTextColumn.ElementStyle>
-                                                <Style TargetType="{x:Type TextBlock}" BasedOn="{StaticResource MatchingTextRightStyle}"/>
+                                                <Style TargetType="{x:Type TextBlock}" BasedOn="{StaticResource MatchingTextRightStyle}">
+                                                    <Setter Property="ToolTip" Value="{Binding ExposureDisplay}"/>
+                                                </Style>
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
                                         <DataGridTextColumn Header="Average Flat Temperature"
@@ -1127,6 +1132,66 @@
                                 </DockPanel>
                             </Border>
                         </Grid>
+                    </Grid>
+                </TabItem>
+                <TabItem Header="Verify masters">
+                    <Grid DataContext="{Binding Verification}" Margin="24">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+                            <TextBlock Text="Verify master coverage" FontSize="18" FontWeight="SemiBold"/>
+                            <TextBlock Text="Quickly check for master flats in matching relative folders before removing unprocessed images. No full scan is needed." TextWrapping="Wrap" Margin="0,6,0,0"/>
+                            <TextBlock Text="Checks non-empty masters or source copies with matching filenames and sizes. Exposure coverage and image integrity are not checked. This feature does not delete files." TextWrapping="Wrap" Margin="0,6,0,0" Foreground="{StaticResource SecondaryTextBrush}"/>
+                        </StackPanel>
+                        <Grid Grid.Row="1" IsEnabled="{Binding IsIdle}" Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <TextBlock Text="Unprocessed source root" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Text="{Binding SourceRoot, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8" Padding="8"/>
+                            <Button Grid.Column="2" Content="Browse" Command="{Binding BrowseSourceCommand}" Margin="0,0,0,8" Style="{StaticResource SecondaryButtonStyle}"/>
+                            <TextBlock Grid.Row="1" Text="Master output root" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding MasterRoot, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" Padding="8"/>
+                            <Button Grid.Row="1" Grid.Column="2" Content="Browse" Command="{Binding BrowseMastersCommand}" Style="{StaticResource SecondaryButtonStyle}"/>
+                        </Grid>
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,12">
+                            <Button Content="Compare folders" Command="{Binding CompareCommand}" Margin="0,0,12,0" Style="{StaticResource PrimaryButtonStyle}"/>
+                            <Button Content="Cancel" Command="{Binding CompareCancelCommand}" Margin="0,0,12,0" Style="{StaticResource SecondaryButtonStyle}"/>
+                            <Button Content="Export report" Command="{Binding ExportReportCommand}" Style="{StaticResource SecondaryButtonStyle}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Row="3" Margin="0,0,0,12">
+                            <TextBlock Text="{Binding Summary}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding Conclusion}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding ProgressText}" Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}"/>
+                            <TextBlock Text="Double-click a row to open its source and master folders." Margin="0,6,0,0" Foreground="{StaticResource SecondaryTextBrush}"/>
+                            <TextBlock Text="{Binding FolderOpenStatus}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                            <ProgressBar IsIndeterminate="True" Height="3" Margin="0,8,0,0" Visibility="{Binding IsComparing, Converter={StaticResource BoolToVis}}"/>
+                        </StackPanel>
+                        <DataGrid Grid.Row="4" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" EnableRowVirtualization="True" EnableColumnVirtualization="True">
+                            <DataGrid.RowStyle>
+                                <Style TargetType="DataGridRow">
+                                    <EventSetter Event="MouseDoubleClick" Handler="OnVerificationRowDoubleClick"/>
+                                </Style>
+                            </DataGrid.RowStyle>
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Status" Binding="{Binding StatusText}" Width="110"/>
+                                <DataGridTextColumn Header="Relative folder" Binding="{Binding RelativeDirectory}" Width="2*">
+                                    <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding RelativeDirectory}"/><Setter Property="TextTrimming" Value="CharacterEllipsis"/></Style></DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Sources" Binding="{Binding SourceCount}" Width="65"/>
+                                <DataGridTextColumn Header="Masters" Binding="{Binding MasterCount}" Width="65"/>
+                                <DataGridTextColumn Header="Master files / copy folder" Binding="{Binding MasterPaths}" Width="2*">
+                                    <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding MasterPaths}"/><Setter Property="TextTrimming" Value="CharacterEllipsis"/></Style></DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Details" Binding="{Binding Detail}" Width="3*">
+                                    <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding Detail}"/><Setter Property="TextTrimming" Value="CharacterEllipsis"/></Style></DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
                     </Grid>
                 </TabItem>
             </TabControl>

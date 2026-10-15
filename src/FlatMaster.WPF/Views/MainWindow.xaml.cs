@@ -18,6 +18,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using FlatMaster.Core.Models;
 using FlatMaster.WPF.ViewModels;
 
 namespace FlatMaster.WPF.Views;
@@ -31,6 +34,17 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DataContext = viewModel;
+    }
+
+    private void OnVerificationRowDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left || sender is not DataGridRow { DataContext: FlatVerificationRow row } gridRow)
+            return;
+        if (ItemsControl.ItemsControlFromItemContainer(gridRow)?.DataContext is FlatVerificationViewModel verification)
+        {
+            verification.OpenFolders(row);
+            e.Handled = true;
+        }
     }
 
     private void OnLicensesClick(object sender, RoutedEventArgs e)

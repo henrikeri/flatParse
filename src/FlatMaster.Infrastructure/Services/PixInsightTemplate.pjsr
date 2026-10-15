@@ -246,7 +246,7 @@ function chooseNearest(candidates, exp, want, match){
   return { candidate: best, delta: bestDelta };
 }
 
-function integrateToMaster(paths,outPath,forDark,hints,rej,outputExt,imageTypeOverride){
+function integrateToMaster(paths,outPath,forDark,hints,rej,outputExt,imageTypeOverride,combinedExposures){
   if(!paths.length) throw new Error("No frames for "+outPath);
   ensureDir(parentDir(outPath));
 
@@ -337,6 +337,17 @@ function integrateToMaster(paths,outPath,forDark,hints,rej,outputExt,imageTypeOv
   try {
     var imgType = imageTypeOverride || ((!forDark) ? "Master Flat" : "Master Dark");
     setImageTypeKeyword(win, imgType);
+    if (combinedExposures && combinedExposures.length){
+      var combinedKeywords = [];
+      var originalKeywords = win.keywords || [];
+      for (var ck=0; ck<originalKeywords.length; ck++){
+        var keywordName = String(originalKeywords[ck].name).toUpperCase();
+        if (keywordName !== "EXPTIME" && keywordName !== "EXPOSURE" && keywordName !== "EXPOSURETIME" && keywordName !== "X_EXPOSURE" && keywordName !== "FMEXPS")
+          combinedKeywords.push(originalKeywords[ck]);
+      }
+      combinedKeywords.push(new FITSKeyword("FMEXPS", combinedExposures.join(","), "Flat exposures calibrated separately (seconds)"));
+      win.keywords = combinedKeywords;
+    }
   } catch (e) { warn("[metadata] IMAGETYP not set: " + e); }
 
   saveImage(win, outPath, hints, outputExt);
@@ -773,12 +784,54 @@ function run(){
 
       var dateStr = guessDateFromPath(dir, files);
       var filt = guessFilterFrom(files, dir);
-      var masterName = "MasterFlat_" + dateStr + "_" + filt + "_" + kexp(exp) + "s." + outExt;
+      var masterName = "MasterFlat_" + dateStr + "_" + filt + "_" + (grp.outputTag || kexp(exp)) + "s." + outExt;
       var masterOut = joinPath(outBase, masterName);
       var masterTemp = tempOutputPath(masterOut, outExt);
       try { if (File.exists(masterTemp)) File.remove(masterTemp); } catch(_){ }
 
       var cacheDir = joinPath(dir, CFG.cacheDirName||"_DarkMasters");
+      if (grp.calibrationGroups && grp.calibrationGroups.length > 1){
+        var combinedFiles = [];
+        var combinedDirs = [];
+        for (var cg=0; cg<grp.calibrationGroups.length; cg++){
+          var unit = grp.calibrationGroups[cg];
+          var unitSelection = pickDarkFor(unit.exposure, unit.want || {}, cacheDir, cats, rej, hintsCal, match, outExt, biasMasterCache);
+          if (!unitSelection || !unitSelection.path){
+            if (CFG.requireDarks)
+              throw new Error("No suitable dark/bias for required calibration @ " + kexp(unit.exposure) + " s in combined group " + dir);
+            warn("  " + kexp(unit.exposure) + "s: no dark subtraction for this exposure.");
+            combinedFiles = combinedFiles.concat(unit.files);
+          } else {
+            var unitOut = joinPath(outBase, (CFG.calibratedSubdirBase||"_CalibratedFlats") + "_" + grp.outputTag + "_" + cg + "_" + kexp(unit.exposure) + "s");
+            log("  " + kexp(unit.exposure) + "s: using [" + unitSelection.kind + "] " + unitSelection.path);
+            pulse("DARK_BEFORE_CALIBRATE");
+            var unitFiles = calibrateFlats(unit.files, unitOut, unitSelection.path, !!unitSelection.isBias, unitSelection.optimize, hintsCal, outExt) || [];
+            if (unitFiles.length !== unit.files.length)
+              throw new Error("Calibration did not produce every input for " + kexp(unit.exposure) + "s in combined group.");
+            combinedFiles = combinedFiles.concat(unitFiles);
+            combinedDirs.push(unitOut);
+            pulse("DARK_AFTER_CALIBRATE");
+          }
+        }
+        // Apply the three-frame minimum after pooling, never per exposure.
+        combinedFiles = rejectLowSignalCalibratedFlats(combinedFiles, CFG.minimumCalibratedFlatMedian, CFG.flatSignalSampleGrid);
+        if (combinedFiles.length < 3) throw new Error("Fewer than 3 usable flats in combined exposure group.");
+        pulse("DARK_BEFORE_INTEGRATE");
+        var calibratedExposures = [];
+        for (var ce=0; ce<grp.calibrationGroups.length; ce++) calibratedExposures.push(grp.calibrationGroups[ce].exposure);
+        integrateToMaster(combinedFiles, masterTemp, false, hintsMaster, rej, outExt, null, calibratedExposures);
+        publishOutput(masterTemp, masterOut);
+        touch(grp.completionPath, JSON.stringify({masterPath:masterOut, integratedFrameCount:combinedFiles.length}));
+        pulse("DARK_AFTER_INTEGRATE");
+        log("  Saved: " + masterOut + " [combined exposures]");
+        if (CFG.deleteCalibrated){
+          for (var cd=0; cd<combinedDirs.length; cd++){
+            try { File.removeDirectory(combinedDirs[cd], true); }
+            catch (cleanupError) { warn("  [cleanup] failed " + combinedDirs[cd] + " : " + cleanupError); }
+          }
+        }
+        continue;
+      }
       var sel = pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt, biasMasterCache);
 
       if(!sel || !sel.path){

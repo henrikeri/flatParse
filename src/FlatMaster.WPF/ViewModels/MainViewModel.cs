@@ -53,6 +53,22 @@ public partial class MainViewModel : ObservableObject
     private bool _requireDarks = true;
 
     [ObservableProperty]
+    private bool _combineFlatExposures;
+    public bool CanChangeFlatGrouping => !IsScanning && !IsProcessing && !IsGeneratingMatching && !DarksOnlyProcessMode;
+
+    partial void OnCombineFlatExposuresChanged(bool value)
+    {
+        if (_flatJobs.Count == 0) return;
+        RefreshCachedFlatSelections();
+        UnregisterFlatDirectorySelectionTracking();
+        _flatJobs = [];
+        FlatDirectories.Clear();
+        InvalidateMatchingResultsAfterRescan();
+        StatusMessage = "Flat grouping changed. Scan flats again, then run matching.";
+        RaiseTabWorkflowStateChanged();
+    }
+
+    [ObservableProperty]
     private bool _darksOnlyProcessMode;
 
     private readonly IFileScannerService _fileScanner;
@@ -76,9 +92,11 @@ public partial class MainViewModel : ObservableObject
     private bool _deleteCalibrated = true;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanChangeFlatGrouping))]
     private bool _isScanning;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanChangeFlatGrouping))]
     private bool _isProcessing;
 
     [ObservableProperty]
@@ -150,6 +168,7 @@ public partial class MainViewModel : ObservableObject
     private bool _showBatchProgress;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanChangeFlatGrouping))]
     private bool _isGeneratingMatching;
 
     [ObservableProperty]
@@ -195,6 +214,7 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<string> OutputFormatOptions { get; } = ["XISF", "FITS"];
 
     private List<DirectoryJob> _flatJobs = [];
+    public FlatVerificationViewModel Verification { get; }
     private List<DarkFrame> _darkCatalog = [];
 
     public bool IsNotDarksOnlyMode => !DarksOnlyProcessMode;
@@ -254,6 +274,7 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnDarksOnlyProcessModeChanged(bool value)
     {
+        OnPropertyChanged(nameof(CanChangeFlatGrouping));
         OnPropertyChanged(nameof(IsNotDarksOnlyMode));
         OnPropertyChanged(nameof(ScanButtonText));
         OnPropertyChanged(nameof(CanScanAll));
@@ -316,6 +337,7 @@ public partial class MainViewModel : ObservableObject
         IConfiguration configuration)
     {
         _fileScanner = fileScanner;
+        Verification = new FlatVerificationViewModel();
         _darkMatcher = darkMatcher;
         _pixInsight = pixInsight;
         _nativeEngine = nativeEngine;

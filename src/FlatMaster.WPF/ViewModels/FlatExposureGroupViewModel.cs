@@ -32,7 +32,7 @@ public sealed class FlatExposureGroupViewModel(ExposureGroup group)
             .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
             .Select(p => new FlatFileViewModel(p)));
 
-    public string ExposureDisplay => string.Format(CultureInfo.InvariantCulture, "{0:0.000}s", ExposureTime);
+    public string ExposureDisplay => group.IsCombined ? group.ExposureDisplay : string.Format(CultureInfo.InvariantCulture, "{0:0.000}s", ExposureTime);
 
     public string AverageTemperatureDisplay => AverageTemperatureC.HasValue
         ? string.Format(CultureInfo.InvariantCulture, "{0:0.0} degC", AverageTemperatureC.Value)

@@ -569,7 +569,7 @@ public sealed class DarkMatchingService(ILogger<DarkMatchingService> logger) : I
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                foreach (var group in job.ExposureGroups)
+                foreach (var group in job.ExposureGroups.SelectMany(g => g.CalibrationUnits))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 

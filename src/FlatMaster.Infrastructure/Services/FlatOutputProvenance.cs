@@ -13,7 +13,7 @@ public static class FlatOutputProvenance
     {
         var criteria = group.MatchingCriteria;
         var meta = group.RepresentativeMetadata;
-        return Hash(JsonSerializer.Serialize(new
+        var identity = Hash(JsonSerializer.Serialize(new
         {
             Exposure = Math.Round(group.ExposureTime, 3),
             Filter = meta?.Filter?.Trim().ToUpperInvariant(),
@@ -24,6 +24,8 @@ public static class FlatOutputProvenance
             Height = criteria?.Height ?? meta?.Height ?? 0,
             Channels = criteria?.Channels ?? meta?.Channels ?? 1
         }));
+        return group.IsCombined ? Hash(identity + "|Combined|" + string.Join("|", group.CalibrationGroups
+            .OrderBy(g => g.ExposureTime).Select(CalibrationIdentity))) : identity;
     }
 
     public static string GroupKey(DirectoryJob job, ExposureGroup group)
@@ -48,6 +50,7 @@ public static class FlatOutputProvenance
             SourceDirectory = Path.GetFullPath(job.DirectoryPath),
             OutputDirectory = OutputDirectory(job, job.OutputRootPath), Engine = engine,
             ExposureSeconds = group.ExposureTime, Filter = meta?.Filter,
+            CalibrationExposures = group.CalibrationUnits.Select(g => g.ExposureTime).Distinct().OrderBy(x => x).ToList(),
             Binning = criteria?.Binning ?? meta?.Binning, Gain = criteria?.Gain ?? meta?.Gain,
             Offset = criteria?.Offset ?? meta?.Offset, Width = criteria?.Width ?? meta?.Width ?? 0,
             Height = criteria?.Height ?? meta?.Height ?? 0, Channels = criteria?.Channels ?? meta?.Channels ?? 1,

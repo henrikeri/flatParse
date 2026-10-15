@@ -955,7 +955,7 @@ public sealed class MasterDarkMaterializer(
         var requiredFolders = new Dictionary<string, List<(DirectoryJob job, ExposureGroup group)>>(StringComparer.OrdinalIgnoreCase);
         foreach (var job in plan.SelectedJobs)
         {
-            foreach (var group in job.ExposureGroups.Where(g => g.IsValid))
+            foreach (var group in job.ExposureGroups.Where(g => g.IsValid).SelectMany(g => g.CalibrationUnits))
             {
                 var match = _darkMatcher.FindBestDark(group, plan.DarkCatalog, plan.Configuration.DarkMatching);
                 if (match == null) continue;

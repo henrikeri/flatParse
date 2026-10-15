@@ -257,7 +257,7 @@ public partial class MainViewModel
         var unmatched = new List<(DirectoryJob Job, ExposureGroup Group)>();
         foreach (var job in plan.SelectedJobs)
         {
-            foreach (var group in job.ExposureGroups.Where(group => group.IsValid))
+            foreach (var group in job.ExposureGroups.Where(group => group.IsValid).SelectMany(group => group.CalibrationUnits))
             {
                 var match = _darkMatcher.FindBestDark(
                     group,

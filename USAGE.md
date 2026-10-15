@@ -197,3 +197,25 @@ dotnet test
 ## License
 
 GNU GPLv3 - See LICENSE file. Third-party notices are listed in THIRD-PARTY-NOTICES.
+
+## Verify masters before removing source images
+
+The **Verify masters** tab is independent of scanning, matching, and processing. Select an unprocessed source root and the corresponding master output root with the same relative folder structure, then click **Compare folders**. For example, source `session/Ha` is compared with output `session/Ha`.
+
+The comparison walks source folders and lists image files without opening them. Each source folder containing FIT/FITS/XISF images gets a row showing the source count, non-empty master count, matching master paths, and status. Missing and failed folders appear first. Master names beginning with `MasterFlat_`, `Master Flat `, or `master_flat_` are recognised case-insensitively; temporary files and master darks do not count. FlatMaster working directories and generated source masters are excluded.
+
+When no master is present, **Copies present** means every source image has a non-empty output copy with the same filename and size. This covers underfilled exposure groups preserved without integration. A folder may contain three or four files split into multiple one- or two-frame groups. Partial copies or copies with different sizes remain missing; copy contents are not read.
+
+An empty master or an inaccessible/linked directory prevents an all-present result. Empty source trees are reported as nothing checked. **Cancel** stops the walk; **Export report** saves a CSV including both roots, check time, and the scope of the comparison. Changing either root clears the previous result. Double-click a result row to open both folders in Explorer; a missing folder opens its nearest existing parent within the selected tree.
+
+This verifies **master presence per folder**, without the full metadata scan. It does not check every exposure group, source-frame coverage, or image integrity, and does not delete files. If a folder contains multiple exposure groups, review its master list before removing source frames. Compare again whenever either tree changes.
+
+## Combine flat exposures after separate calibration
+
+Enable **Combine compatible flat exposures after separate calibration** in Configuration, then scan flats again and run matching. Changing the option clears the previous flat scan and matching choices. The option is off by default and is saved with your settings.
+
+Within each folder, flats sharing filter, binning, gain, offset, image dimensions, and channel count can be integrated together across exposure times. The total must reach three frames. Each original exposure group retains its temperature and its own automatic dark/bias match. The engine calibrates those groups separately, pools the calibrated frames, rejects low-signal frames, normalises brightness, and integrates one master. If a required dark is missing for any exposure, the combined master fails. The final usable pool must still contain at least three frames.
+
+Matching shows labels such as **20 + 30 s (combined)** and details of the separate dark matches. A single manual dark override is unavailable for a combined group. One Include checkbox controls the complete combined integration.
+
+Outputs use distinct names such as `MasterFlat_2026-09-25_HA_Mixed20-30s.xisf`, with the exposure list and full input inventory in the provenance sidecar. Existing separate masters and preserved copies do not satisfy a combined group, so enabling this mode can suggest new combined masters even for previously completed folders. Frames absorbed into a combined group are not copied as underfilled preservation candidates. Folders with fewer than three compatible frames in total keep the previous preservation behaviour.

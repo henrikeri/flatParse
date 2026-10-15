@@ -155,6 +155,27 @@ public class MasterDarkMaterializerTests
         }
     }
 
+    [Fact]
+    public async Task MaterializeMastersAsync_ImportsBothDarksForUnderfilledCombinedExposures()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "FlatMasterTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var dark20 = CreateImportableMaster(root, "twenty", 20, ImageType.MasterDark);
+            var dark30 = CreateImportableMaster(root, "thirty", 30, ImageType.MasterDark);
+            var first = new ExposureGroup { ExposureTime = 20, FilePaths = ["a.fit"], MatchingCriteria = new MatchingCriteria { Binning = "1" } };
+            var second = new ExposureGroup { ExposureTime = 30, FilePaths = ["b.fit", "c.fit"], MatchingCriteria = new MatchingCriteria { Binning = "1" } };
+            var plan = CreateImportPlan(root, Path.Combine(root, "output"), [dark20, dark30], [first, second]);
+            plan.Jobs[0] = CombinedFlatGrouping.Combine(plan.Jobs[0]);
+            plan.Jobs[0].ExposureGroups.Single().IsCombined.Should().BeTrue();
+            var imports = await CreateMaterializer().MaterializeMastersAsync(plan, [], true, null);
+            imports.Should().HaveCount(2);
+            imports.Select(File.ReadAllText).Should().BeEquivalentTo("twenty", "thirty");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private static MasterDarkMaterializer CreateMaterializer()
         => new(
             new Mock<ILogger<MasterDarkMaterializer>>().Object,
