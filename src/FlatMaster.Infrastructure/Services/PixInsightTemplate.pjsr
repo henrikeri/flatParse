@@ -83,10 +83,55 @@ function assignICTargets(IC, paths){
   IC.targetFrames = rows;
 }
 
+// XISF writer hints are whitespace-separated tokens ("compression-codec zstd+sh compression-level 19").
+// Semicolons are not understood and make PixInsight silently ignore the hint, so normalise them.
+function normalizeXisfHints(hints){
+  return String(hints || "").replace(/[;,]/g, " ").replace(/\s+/g, " ").replace(/^ | $/g, "");
+}
+
+// ImageWindow.saveAs() has no hints parameter, so compressed XISF output has to go through
+// FileFormatInstance. The sample format, geometry and keywords of the window are carried over so
+// a Float64 master stays Float64.
+function saveCompressedXisf(win, outPath, hints){
+  var img = win.mainView.image;
+  var fi = new FileFormatInstance(new FileFormat("XISF", false, true));
+  var closed = false;
+  try {
+    if (!fi.create(outPath, hints)) throw new Error("FileFormatInstance.create failed");
+    var d = new ImageDescription;
+    d.width = img.width;
+    d.height = img.height;
+    d.numberOfChannels = img.numberOfChannels;
+    d.colorSpace = img.isColor ? (typeof ColorSpace_RGB !== "undefined" ? ColorSpace_RGB : 1)
+                               : (typeof ColorSpace_Gray !== "undefined" ? ColorSpace_Gray : 0);
+    d.bitsPerSample = img.bitsPerSample;
+    d.ieeefpSampleFormat = !!img.isReal;
+    d.complexSample = false;
+    fi.setOptions(d);
+    try { fi.keywords = win.keywords; } catch(e){ warn("[xisf] keywords not copied: " + e); }
+    if (!fi.writeImage(img)) throw new Error("FileFormatInstance.writeImage failed");
+    fi.close(); closed = true;
+  } finally {
+    if (!closed) { try { fi.close(); } catch(_){ } }
+  }
+  if (!File.exists(outPath) || new FileInfo(outPath).size <= 0) throw new Error("compressed XISF was not written: " + outPath);
+}
+
 function saveImage(win, outPath, hints, outputExt){
   var fmt = String(outputExt || "xisf").toLowerCase();
   if (fmt !== "fits") fmt = "xisf";
   ensureDir(parentDir(outPath));
+  var xisfHints = normalizeXisfHints(hints);
+  if (fmt === "xisf" && xisfHints.length){
+    try {
+      saveCompressedXisf(win, outPath, xisfHints);
+      log("  [xisf compressed: " + xisfHints + "] " + outPath);
+      return;
+    } catch(e){
+      warn("[xisf] compressed save failed, falling back to uncompressed saveAs: " + e);
+      try { if (File.exists(outPath)) File.remove(outPath); } catch(_){ }
+    }
+  }
   var tried = [];
   function tryCall(label, fn){
     try{
@@ -631,7 +676,7 @@ function pickDarkFor(exp, want, cacheDir, cats, rej, hintsCal, match, outExt, bi
       try { if (File.exists(outBias)) File.remove(outBias); } catch(e) {
         throw new Error("Cannot replace cached master bias " + outBias + ": " + e);
       }
-      integrateToMaster(bias.map(function(x){ return x.path; }), outBias, true, hintsCal, rej, outExt, "Master Bias");
+      integrateToMaster(bias.map(function(x){ return x.path; }), outBias, true, CFG.xisfHintsMaster || hintsCal, rej, outExt, "Master Bias");
       if (biasMasterCache) biasMasterCache[cacheKey] = true;
       return { path: outBias, isBias: true, optimize: false, kind: "P7 Bias(built)" + suffix };
     }

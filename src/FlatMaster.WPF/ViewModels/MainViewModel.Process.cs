@@ -318,7 +318,7 @@ public partial class MainViewModel
             DeleteCalibratedFlats = DeleteCalibrated,
             CacheDirName = _configuration["ProcessingDefaults:CacheDirName"] ?? "_DarkMasters",
             CalibratedSubdirBase = _configuration["ProcessingDefaults:CalibratedSubdirBase"] ?? "_CalibratedFlats",
-            XisfHintsMaster = _configuration["ProcessingDefaults:XisfHintsMaster"] ?? "",
+            XisfHintsMaster = _configuration["ProcessingDefaults:XisfHintsMaster"] ?? ProcessingConfiguration.DefaultXisfHintsMaster,
             MinimumCalibratedFlatMedian = double.TryParse(
                 _configuration["ProcessingDefaults:MinimumCalibratedFlatMedian"],
                 NumberStyles.Float,

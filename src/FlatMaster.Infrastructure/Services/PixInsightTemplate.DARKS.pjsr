@@ -84,7 +84,41 @@ function guessDateFromPath(dir, files){
 // Keep the same helpers as the full template so the dark fork behaves identically for integration
 function assignIIImagesRowsPaths(II, paths){ var rows = []; for (var i=0;i<paths.length;i++) rows.push([ true, String(paths[i]), "", "" ]); II.images = rows; }
 function assignICTargets(IC, paths){ var rows = []; for (var i=0;i<paths.length;i++) rows.push([true, String(paths[i])]); IC.targetFrames = rows; }
-function saveImage(win, outPath, hints, outputExt){ var fmt = String(outputExt || "xisf").toLowerCase(); if (fmt !== "fits") fmt = "xisf"; ensureDir(parentDir(outPath)); var tried = []; function tryCall(label, fn){ try{ fn(); log("  [saveAs " + label + "] " + outPath); return true; } catch(e){ tried.push(label + ": " + e); return false; } } if (tryCall("path,format,hints", function(){ win.saveAs(outPath, fmt, hints); })) return; if (tryCall("path,format,hints,overwrite", function(){ win.saveAs(outPath, fmt, hints, false); })) return; if (tryCall("path,format", function(){ win.saveAs(outPath, fmt); })) return; if (tryCall("path,overwrite,format,hints", function(){ win.saveAs(outPath, false, fmt, hints); })) return; if (tryCall("path,overwrite", function(){ win.saveAs(outPath, false); })) return; if (tryCall("path-only", function(){ win.saveAs(outPath); })) return; throw new Error("saveAs failed for " + outPath + " ; tried => " + tried.join(" | ")); }
+// XISF writer hints are whitespace-separated tokens ("compression-codec zstd+sh compression-level 19").
+// Semicolons are not understood and make PixInsight silently ignore the hint, so normalise them.
+function normalizeXisfHints(hints){
+  return String(hints || "").replace(/[;,]/g, " ").replace(/\s+/g, " ").replace(/^ | $/g, "");
+}
+
+// ImageWindow.saveAs() has no hints parameter, so compressed XISF output has to go through
+// FileFormatInstance. The sample format, geometry and keywords of the window are carried over so
+// a Float64 master stays Float64.
+function saveCompressedXisf(win, outPath, hints){
+  var img = win.mainView.image;
+  var fi = new FileFormatInstance(new FileFormat("XISF", false, true));
+  var closed = false;
+  try {
+    if (!fi.create(outPath, hints)) throw new Error("FileFormatInstance.create failed");
+    var d = new ImageDescription;
+    d.width = img.width;
+    d.height = img.height;
+    d.numberOfChannels = img.numberOfChannels;
+    d.colorSpace = img.isColor ? (typeof ColorSpace_RGB !== "undefined" ? ColorSpace_RGB : 1)
+                               : (typeof ColorSpace_Gray !== "undefined" ? ColorSpace_Gray : 0);
+    d.bitsPerSample = img.bitsPerSample;
+    d.ieeefpSampleFormat = !!img.isReal;
+    d.complexSample = false;
+    fi.setOptions(d);
+    try { fi.keywords = win.keywords; } catch(e){ warn("[xisf] keywords not copied: " + e); }
+    if (!fi.writeImage(img)) throw new Error("FileFormatInstance.writeImage failed");
+    fi.close(); closed = true;
+  } finally {
+    if (!closed) { try { fi.close(); } catch(_){ } }
+  }
+  if (!File.exists(outPath) || new FileInfo(outPath).size <= 0) throw new Error("compressed XISF was not written: " + outPath);
+}
+
+function saveImage(win, outPath, hints, outputExt){ var fmt = String(outputExt || "xisf").toLowerCase(); if (fmt !== "fits") fmt = "xisf"; ensureDir(parentDir(outPath)); var xisfHints = normalizeXisfHints(hints); if (fmt === "xisf" && xisfHints.length){ try { saveCompressedXisf(win, outPath, xisfHints); log("  [xisf compressed: " + xisfHints + "] " + outPath); return; } catch(e){ warn("[xisf] compressed save failed, falling back to uncompressed saveAs: " + e); try { if (File.exists(outPath)) File.remove(outPath); } catch(_){ } } } var tried = []; function tryCall(label, fn){ try{ fn(); log("  [saveAs " + label + "] " + outPath); return true; } catch(e){ tried.push(label + ": " + e); return false; } } if (tryCall("path,format,hints", function(){ win.saveAs(outPath, fmt, hints); })) return; if (tryCall("path,format,hints,overwrite", function(){ win.saveAs(outPath, fmt, hints, false); })) return; if (tryCall("path,format", function(){ win.saveAs(outPath, fmt); })) return; if (tryCall("path,overwrite,format,hints", function(){ win.saveAs(outPath, false, fmt, hints); })) return; if (tryCall("path,overwrite", function(){ win.saveAs(outPath, false); })) return; if (tryCall("path-only", function(){ win.saveAs(outPath); })) return; throw new Error("saveAs failed for " + outPath + " ; tried => " + tried.join(" | ")); }
 function safeNum(x){ return (x===undefined||x===null||isNaN(x)) ? NaN : Number(x); }
 function saveSingleFrameAsMaster(srcPath, outPath, hints, outputExt, forDark){ var wins = ImageWindow.open(String(srcPath)); if (!wins || !wins.length) throw new Error("Unable to open single input frame: " + srcPath); var win = wins[0]; if (!win) throw new Error("No window returned for single input frame: " + srcPath); try { var imgType = (!forDark) ? "Master Flat" : "Master Dark"; var kws = win.keywords || []; kws.push(new FITSKeyword("IMAGETYP", imgType, "Type of image")); win.keywords = kws; } catch (e) { warn("[metadata] IMAGETYP not set: " + e); } saveImage(win, outPath, hints, outputExt); for (var i = 0; i < wins.length; i++) try { wins[i].forceClose(); } catch(_){ } }
 function exposureLabel(exp){ var v=safeNum(exp); if(isNaN(v)) return "Unknowns"; var r=Math.round(v*1000)/1000; if(Math.abs(r-Math.round(r))<0.001) return String(Math.round(r))+"s"; return String(r)+"s"; }

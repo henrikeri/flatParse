@@ -56,6 +56,30 @@ public class PixInsightServiceTests
         script.Should().NotContain("SKIP (master already exists)");
     }
 
+    [Theory]
+    [InlineData("Flats/Blue")]
+    [InlineData("__DARKMATERIALIZE__/Master/Darks/25s/-10degC")]
+    public void GeneratePJSRScript_SavesCompressedXisfThroughFileFormatInstance(string relativeDirectory)
+    {
+        var plan = BuildPlan(relativeDirectory: relativeDirectory, exposure: 25.0);
+
+        var script = _service.GeneratePJSRScript(plan);
+
+        // ImageWindow.saveAs() cannot take writer hints, so compression needs FileFormatInstance.
+        script.Should().Contain("function saveCompressedXisf");
+        script.Should().Contain("fi.create(outPath, hints)");
+        script.Should().Contain("function normalizeXisfHints");
+        // The serializer escapes '+' as +, which still evaluates to "zstd+sh" in JavaScript.
+        script.Should().Contain("xisfHintsMaster:\"compression-codec zstd\\u002Bsh\"");
+    }
+
+    [Fact]
+    public void DefaultMasterHints_AreWhitespaceSeparatedAndCompressed()
+    {
+        ProcessingConfiguration.DefaultXisfHintsMaster.Should().Be("compression-codec zstd+sh");
+        ProcessingConfiguration.DefaultXisfHintsMaster.Should().NotContain(";");
+    }
+
     [Fact]
     public void GeneratePJSRScript_IncludesConfiguredOutputExtension()
     {

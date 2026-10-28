@@ -48,7 +48,13 @@ public sealed record ProcessingConfiguration
     public string CalibratedSubdirBase { get; init; } = "_CalibratedFlats";
     public string MasterSubdirName { get; init; } = "Masters";
     public string XisfHintsCal { get; init; } = "";
-    public string XisfHintsMaster { get; init; } = "compression-codec zlib+sh; compression-level 9; checksum sha1";
+    /// <summary>
+    /// XISF writer hints for master output, whitespace-separated (PixInsight ignores semicolons).
+    /// <c>zstd+sh</c> is fast and ~45% smaller on 64-bit masters; adding <c>compression-level 100</c>
+    /// saves a further ~13% but is roughly 100 times slower. Empty disables compression.
+    /// </summary>
+    public string XisfHintsMaster { get; init; } = DefaultXisfHintsMaster;
+    public const string DefaultXisfHintsMaster = "compression-codec zstd+sh";
     /// <summary>
     /// Minimum dark-subtracted flat signal in normalized [0,1] units. Calibrated
     /// frames below this level are rejected before multiplicative normalization.
