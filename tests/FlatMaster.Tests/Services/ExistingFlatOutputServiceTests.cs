@@ -93,13 +93,53 @@ public sealed class ExistingFlatOutputServiceTests : IDisposable
         ExistingFlatOutputService.IsPreserved(job, OutputRoot, source).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Refresh_ToleratesManifestRecordedAtAnotherOutputLocation(bool stateFileMissing)
+    {
+        var oldRoot = Path.Combine(_root, "old-output");
+        var job = CreateJob([CreateGroup(5)], oldRoot);
+        var group = job.ExposureGroups.Single();
+        var manifest = FlatOutputProvenance.Begin(job, group, "Native");
+        var oldMaster = Path.Combine(FlatOutputProvenance.OutputDirectory(job, oldRoot), "MasterFlat_2026-10-10_Ha_Bin1_5s.xisf");
+        File.WriteAllText(oldMaster, "master");
+        FlatOutputProvenance.Complete(manifest, oldMaster);
+
+        // The finished output tree is moved afterwards; the manifests still record the old folder.
+        Directory.Move(oldRoot, OutputRoot);
+        if (stateFileMissing)
+            Directory.Delete(Path.Combine(FlatOutputProvenance.OutputDirectory(job, OutputRoot), ".FlatMaster"), true);
+
+        var act = () => ExistingFlatOutputService.Refresh([job], OutputRoot);
+
+        act.Should().NotThrow();
+        group.OutputStatus.Should().Be(FlatOutputStatus.Completed);
+        group.ExistingMasterPath.Should().Be(Path.Combine(FlatOutputProvenance.OutputDirectory(job, OutputRoot), "MasterFlat_2026-10-10_Ha_Bin1_5s.xisf"));
+    }
+
+    [Fact]
+    public void Refresh_MarksUnreadableManifestFailedInsteadOfAbortingScan()
+    {
+        var job = CreateJob([CreateGroup(5)]);
+        var group = job.ExposureGroups.Single();
+        var statePath = FlatOutputProvenance.StatePath(job, group, OutputRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(statePath)!);
+        File.WriteAllText(statePath, "{ \"Version\": 99 }");
+
+        var act = () => ExistingFlatOutputService.Refresh([job], OutputRoot);
+
+        act.Should().NotThrow();
+        group.OutputStatus.Should().Be(FlatOutputStatus.Failed);
+    }
+
     private string OutputRoot => Path.Combine(_root, "custom-output");
 
-    private DirectoryJob CreateJob(List<ExposureGroup> groups) => new()
+    private DirectoryJob CreateJob(List<ExposureGroup> groups, string? outputRoot = null) => new()
     {
         DirectoryPath = Path.Combine(_root, "input", "session"),
         BaseRootPath = Path.Combine(_root, "input"),
-        OutputRootPath = Path.Combine(_root, "wrong-default-output"),
+        OutputRootPath = outputRoot ?? Path.Combine(_root, "wrong-default-output"),
         RelativeDirectory = "session",
         ExposureGroups = groups
     };

@@ -101,14 +101,17 @@ public static class ExistingFlatOutputService
         try
         {
             var manifest = FlatOutputProvenance.Read(path);
-            if (manifest == null || manifest.Version != 1 ||
-                !string.Equals(manifest.OutputDirectory, outputDirectory, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Unsupported or misplaced output manifest");
-            if (manifest.MasterPath != null &&
-                !string.Equals(Path.GetDirectoryName(manifest.MasterPath), outputDirectory, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Recorded master is outside the mirrored group directory");
-            if (manifest.MasterPath != null && File.Exists(manifest.MasterPath) &&
-                string.Equals(Path.GetDirectoryName(manifest.MasterPath), outputDirectory, StringComparison.OrdinalIgnoreCase))
+            if (manifest == null || manifest.Version != 1)
+                throw new InvalidDataException("Unsupported output manifest");
+            if (!SameDirectory(manifest.OutputDirectory, outputDirectory) ||
+                (manifest.MasterPath != null && !SameDirectory(Path.GetDirectoryName(manifest.MasterPath), outputDirectory)))
+            {
+                // The output tree was moved or copied after the manifest was written, so its
+                // recorded paths are stale. Never abort the scan over it.
+                ApplyRelocatedManifest(group, manifest, outputDirectory);
+                return;
+            }
+            if (manifest.MasterPath != null && File.Exists(manifest.MasterPath))
                 group.ExistingMasterPath = manifest.MasterPath;
             if (manifest.CalibrationIdentity != FlatOutputProvenance.CalibrationIdentity(group))
             {
@@ -144,12 +147,49 @@ public static class ExistingFlatOutputService
                     : $"Recorded {manifest.Engine} output; {manifest.InputFrameCount} input frames";
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
+                                       or InvalidDataException or NotSupportedException or ArgumentException)
         {
             group.OutputStatus = FlatOutputStatus.Failed;
             group.OutputStatusDetail = "Cannot verify output manifest: " + ex.Message;
         }
     }
+
+    private static void ApplyRelocatedManifest(ExposureGroup group, FlatMasterManifest manifest, string outputDirectory)
+    {
+        if (group.ExistingMasterPath == null && !string.IsNullOrWhiteSpace(manifest.MasterPath))
+        {
+            var rebased = Path.Combine(outputDirectory, Path.GetFileName(manifest.MasterPath));
+            if (File.Exists(rebased) && new FileInfo(rebased).Length > 0)
+                group.ExistingMasterPath = rebased;
+        }
+
+        if (manifest.CalibrationIdentity != FlatOutputProvenance.CalibrationIdentity(group))
+        {
+            group.OutputStatus = FlatOutputStatus.ChangedInputs;
+            group.OutputStatusDetail = "Calibration settings differ from the existing master";
+        }
+        else if (manifest.State != "Completed")
+        {
+            group.OutputStatus = FlatOutputStatus.Failed;
+            group.OutputStatusDetail = manifest.Error ?? "Previous processing attempt was interrupted";
+        }
+        else if (group.ExistingMasterPath == null)
+        {
+            group.OutputStatus = FlatOutputStatus.Pending;
+            group.OutputStatusDetail = "Recorded output master is missing from the current output folder";
+        }
+        else
+        {
+            // File sizes and input paths recorded at the old location can't be compared
+            // reliably, so treat it like a legacy output whose master is present.
+            group.OutputStatus = FlatOutputStatus.Completed;
+            group.OutputStatusDetail = "Existing master; manifest was recorded for a different output location (folder moved?), inputs not re-verified";
+        }
+    }
+
+    private static bool SameDirectory(string? left, string? right)
+        => string.Equals(left?.TrimEnd('\\', '/'), right?.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
 
     private static HashSet<string> GuessFilters(DirectoryJob job, ExposureGroup group)
     {
